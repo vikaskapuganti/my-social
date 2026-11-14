@@ -122,7 +122,7 @@ function seedData() {
   };
   return {
     version: 1,
-    settings: { shootLeadDays: 5, speakingSpeed: 2.5, team: DEFAULT_TEAM.slice(), brandsAdded: true, generated: {} },
+    settings: { shootLeadDays: 5, speakingSpeed: 2.5, postBuffer: 3, team: DEFAULT_TEAM.slice(), brandsAdded: true, templateCleanup: true, generated: {} },
     clients: [kerbside, nutraahi, ...ownBrands()],
     items: [],
     ideas: [],
@@ -218,7 +218,7 @@ const Store = {
   },
 
   normalize(data) {
-    data.settings = Object.assign({ shootLeadDays: 5, speakingSpeed: 2.5, team: DEFAULT_TEAM.slice(), generated: {} }, data.settings || {});
+    data.settings = Object.assign({ shootLeadDays: 5, speakingSpeed: 2.5, postBuffer: 3, team: DEFAULT_TEAM.slice(), generated: {} }, data.settings || {});
     if (!Array.isArray(data.settings.team)) data.settings.team = DEFAULT_TEAM.slice();
     if (!data.settings.generated || typeof data.settings.generated !== 'object') data.settings.generated = {};
     data.clients = Array.isArray(data.clients) ? data.clients : [];
@@ -351,7 +351,30 @@ const Store = {
     this.save();
   },
 
-  // ----- Weekly templates -----
+  // ----- Weekly plan is reference only -----
+  // Earlier versions created pieces from the weekly plan automatically.
+  // Remove those once, unless you already worked on them.
+  cleanupTemplateItems() {
+    if (this.data.settings.templateCleanup) return 0;
+    const before = this.data.items.length;
+    this.data.items = this.data.items.filter(i =>
+      !(i.fromTemplate && i.stage !== 'posted' && !i.script && !i.caption && !i.link && !i.notes));
+    this.data.items.forEach(i => { if (i.fromTemplate) delete i.fromTemplate; });
+    this.data.settings.templateCleanup = true;
+    this.data.settings.generated = {};
+    this.save();
+    return before - this.data.items.length;
+  },
+
+  // A name removed from the team is cleared from open pieces, scripts and plans
+  removeTeamNames(names) {
+    if (!names.length) return;
+    this.data.items.forEach(i => { if (i.stage !== 'posted' && names.includes(i.owner)) i.owner = ''; });
+    this.data.ideas.forEach(x => { if (x.scriptStage !== 'shot' && names.includes(x.owner)) x.owner = ''; });
+    this.data.clients.forEach(c => (c.template || []).forEach(sl => { if (names.includes(sl.owner)) sl.owner = ''; }));
+  },
+
+  // ----- Weekly templates (old, no longer called) -----
   // Creates this week's and next week's slots for every account with a template.
   // Only from today onwards, and each slot only once (deleting a slot won't bring it back).
   generateTemplateSlots() {
@@ -422,6 +445,22 @@ function scriptLength(text) {
   return { words, secs, level };
 }
 
+// Deadline on a script: post a few days before it, shoot the day before that
+function deadlineInfo(idea) {
+  if (!idea || !idea.deadline || idea.scriptStage === 'shot') return null;
+  const buffer = Number(Store.data.settings.postBuffer);
+  const postBy = addDays(idea.deadline, -(isNaN(buffer) ? 3 : buffer));
+  const shootBy = addDays(postBy, -1);
+  const days = Math.round((parseDate(shootBy) - parseDate(todayStr())) / 86400000);
+  const level = days <= 1 ? 'red' : days <= 3 ? 'amber' : 'green';
+  let when;
+  if (days < 0) when = 'Shoot was due ' + shortDate(shootBy);
+  else if (days === 0) when = 'Shoot by today';
+  else if (days === 1) when = 'Shoot by tomorrow';
+  else when = 'Shoot by ' + shortDate(shootBy).split(',')[0] + ' · ' + days + ' days';
+  return { postBy, shootBy, days, level, when };
+}
+
 const Calc = {
   // Posted and planned counts for a client in the week starting weekStart (Monday)
   weekProgress(clientId, weekStart) {
@@ -465,12 +504,12 @@ const Calc = {
     const shootBy = addDays(runsOut, -lead);
 
     if (stock === 0) {
-      return { level: 'bad', stock, perShoot, text: `No reels in stock. Shoot now - plan about ${perShoot} reels.` };
+      return { level: 'bad', stock, perShoot, text: `No reels in stock. Shoot now - plan about ${perShoot} ${perShoot === 1 ? 'reel' : 'reels'}.` };
     }
     if (shootBy <= today) {
-      return { level: 'warn', stock, perShoot, text: `${stock} reel${stock === 1 ? '' : 's'} in stock, lasts until ${shortDate(runsOut)}. Shoot now - plan about ${perShoot} reels.` };
+      return { level: 'warn', stock, perShoot, text: `${stock} reel${stock === 1 ? '' : 's'} in stock, lasts until ${shortDate(runsOut)}. Shoot now - plan about ${perShoot} ${perShoot === 1 ? 'reel' : 'reels'}.` };
     }
-    return { level: 'ok', stock, perShoot, text: `${stock} reel${stock === 1 ? '' : 's'} in stock, lasts until ${shortDate(runsOut)}. Next shoot by ${shortDate(shootBy)} (about ${perShoot} reels).` };
+    return { level: 'ok', stock, perShoot, text: `${stock} reel${stock === 1 ? '' : 's'} in stock, lasts until ${shortDate(runsOut)}. Next shoot by ${shortDate(shootBy)} (about ${perShoot} ${perShoot === 1 ? 'reel' : 'reels'}).` };
   },
 
   overdue() {

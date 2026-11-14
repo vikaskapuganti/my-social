@@ -21,7 +21,10 @@ const state = {
   queueLastClient: '',
   scriptClient: '',
   scriptsOpen: {},
-  trendGenre: ''
+  trendGenre: '',
+  planWeek: 0,
+  calMode: 'month',
+  calWeek: 0
 };
 
 const viewEl = document.getElementById('view');
@@ -79,6 +82,10 @@ function categoryOptions(clientId, selected) {
 
 function categoryDatalist() {
   return `<datalist id="all-categories">${Store.allCategories().map(c => `<option value="${escapeHtml(c)}">`).join('')}</datalist>`;
+}
+
+function plural(n, word) {
+  return `${n} ${word}${Number(n) === 1 ? '' : 's'}`;
 }
 
 function teamOptions(selected, blankLabel) {
@@ -404,7 +411,7 @@ function renderDashboard() {
       <div class="card client-card" style="--client:${c.color}">
         <div class="head">
           <h3 style="margin:0"><a href="#client/${c.id}" class="client-link">${escapeHtml(c.name)}</a></h3>
-          <span class="hint">${[Number(c.reelsPerWeek) ? c.reelsPerWeek + ' reels' : '', Number(c.postsPerWeek) ? c.postsPerWeek + ' posts' : ''].filter(Boolean).join(' + ')} / week</span>
+          <span class="hint">${[Number(c.reelsPerWeek) ? plural(c.reelsPerWeek, 'reel') : '', Number(c.postsPerWeek) ? plural(c.postsPerWeek, 'post') : ''].filter(Boolean).join(' + ')} / week</span>
         </div>
         ${Number(c.reelsPerWeek) ? progressLine('Reels this week', prog.reel, c.reelsPerWeek) : ''}
         ${Number(c.postsPerWeek) ? progressLine('Posts this week', prog.post, c.postsPerWeek) : ''}
@@ -469,38 +476,62 @@ function renderDashboard() {
 
 function renderToday() {
   const today = todayStr();
+  const tomorrow = addDays(today, 1);
+  const weekStart = startOfWeek(today);
   const items = Store.data.items;
-  const dueToday = items.filter(x => x.stage !== 'posted' && x.plannedDate === today);
-  const overdue = Calc.overdue();
-  const shoots = Store.activeClients()
-    .map(c => ({ c, a: Calc.shootAlert(c) }))
-    .filter(x => x.a && x.a.level !== 'ok');
 
-  // Waiting on the team: open pieces per person (everyone except you)
+  // This week across all active accounts (each piece counted once)
+  const active = Store.activeClients();
+  const target = active.reduce((n, c) => n + (Number(c.reelsPerWeek) || 0) + (Number(c.postsPerWeek) || 0), 0);
+  const weekEnd = addDays(weekStart, 6);
+  const postedWeek = items.filter(x => x.stage === 'posted' && x.postedDate >= weekStart && x.postedDate <= weekEnd).length;
+
+  const open = x => x.stage !== 'posted';
+  const dueToday = items.filter(x => open(x) && x.plannedDate === today);
+  const overdue = Calc.overdue();
+  const dueTomorrow = items.filter(x => open(x) && x.plannedDate === tomorrow);
+  const deadlines = Store.data.ideas
+    .map(x => ({ x, d: deadlineInfo(x) }))
+    .filter(o => o.d && o.d.days <= 7)
+    .sort((a, b) => a.d.shootBy.localeCompare(b.d.shootBy));
+
+  // Waiting on the team: only pieces you tagged yourself (not from the weekly plan)
   const byOwner = {};
   items.forEach(x => {
-    if (x.stage === 'posted' || !x.owner || x.owner === 'Vikas') return;
-    if (x.plannedDate && x.plannedDate > addDays(today, 7)) return;
-    const o = (byOwner[x.owner] = byOwner[x.owner] || { n: 0, late: 0, oldest: '' });
+    if (!open(x) || !x.owner || x.owner === 'Vikas' || x.fromTemplate) return;
+    const o = (byOwner[x.owner] = byOwner[x.owner] || { n: 0, late: 0 });
     o.n++;
     if (x.plannedDate && x.plannedDate < today) o.late++;
-    if (x.plannedDate && (!o.oldest || x.plannedDate < o.oldest)) o.oldest = x.plannedDate;
   });
-  const writing = Store.data.ideas.filter(x => x.scriptStage === 'writing').length;
-  const scriptReady = Store.data.ideas.filter(x => x.scriptStage === 'ready').length;
 
-  const line = x => `
-    <div class="today-line" data-action="edit-item" data-id="${x.id}">
+  const status = x => x.stage === 'ready'
+    ? '<span class="pill ok">Ready</span>'
+    : `<span class="pill ${x.stage === 'to_edit' ? 'am' : 'no'}">${x.plannedDate && x.plannedDate <= today ? 'Not ready · ' : ''}${stageLabel(x.stage)}</span>`;
+  const row = (x, withButton) => `
+    <div class="td-row">
       <span class="dot" style="--client:${clientColor(x.clientId)}"></span>
-      <span class="t">${escapeHtml(clientName(x.clientId))} · ${escapeHtml(x.title || 'Untitled')}</span>
-      ${typeBadge(x.type)} ${ownerBadge(x.owner)}
+      <span class="td-tx" data-action="edit-item" data-id="${x.id}">${escapeHtml(clientName(x.clientId))} · ${escapeHtml(x.title || 'Untitled')}${x.plannedDate && x.plannedDate < today ? ` <span class="hint">· ${shortDate(x.plannedDate).split(',')[0]}</span>` : ''}</span>
+      ${status(x)}
+      ${withButton ? `<button class="btn small" data-action="mark-posted" data-id="${x.id}">Mark posted</button>` : ''}
     </div>`;
-
-  const block = (title, count, body, tone) => `
-    <div class="today-block ${tone || ''}">
-      <div class="today-title">${title}${count !== null ? ` <span class="badge">${count}</span>` : ''}</div>
+  const block = (title, list, body) => `
+    <div class="td-block">
+      <div class="td-title">${title}${list !== null ? ` <span class="badge">${list}</span>` : ''}</div>
       ${body}
     </div>`;
+
+  const blocks = [];
+  blocks.push(block('Post today', dueToday.length, dueToday.length ? dueToday.map(x => row(x, true)).join('') : '<p class="hint" style="margin:0">Nothing planned for today.</p>'));
+  if (overdue.length) blocks.push(block('Overdue', overdue.length, overdue.slice(0, 6).map(x => row(x, true)).join('') + (overdue.length > 6 ? `<p class="hint" style="margin:4px 0 0">+${overdue.length - 6} more</p>` : '')));
+  if (dueTomorrow.length) blocks.push(block('Tomorrow', dueTomorrow.length, dueTomorrow.map(x => row(x, false)).join('')));
+  if (deadlines.length) blocks.push(block('Deadlines', deadlines.length, deadlines.map(({ x, d }) => `
+    <div class="td-row">
+      <span class="dot" style="--client:${x.clientId ? clientColor(x.clientId) : 'var(--border)'}"></span>
+      <span class="td-tx" data-action="edit-script" data-id="${x.id}">${escapeHtml(x.title)}</span>
+      <span class="pill dl-${d.level}">${escapeHtml(d.when.split(' · ')[0])}</span>
+    </div>`).join('')));
+  if (Object.keys(byOwner).length) blocks.push(block('Waiting on the team', null, Object.entries(byOwner).map(([name, o]) =>
+    `<p class="today-note"><strong>${escapeHtml(name)}:</strong> ${o.n} open${o.late ? `, <span style="color:var(--danger)">${o.late} late</span>` : ''}</p>`).join('')));
 
   return `
     <div class="card today">
@@ -508,13 +539,8 @@ function renderToday() {
         <h2 style="margin:0">Today</h2>
         <span class="hint">${parseDate(today).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}</span>
       </div>
-      <div class="today-grid">
-        ${block('Post today', dueToday.length, dueToday.length ? dueToday.map(line).join('') : '<p class="hint">Nothing due today.</p>')}
-        ${block('Overdue', overdue.length, overdue.length ? overdue.slice(0, 5).map(line).join('') + (overdue.length > 5 ? `<p class="hint">+${overdue.length - 5} more</p>` : '') : '<p class="hint">All caught up.</p>', overdue.length ? 'bad' : '')}
-        ${block('Shoots', null, shoots.length ? shoots.map(x => `<p class="today-note"><span class="dot" style="--client:${x.c.color}"></span> <strong>${escapeHtml(x.c.name)}:</strong> ${escapeHtml(x.a.text)}</p>`).join('') : '<p class="hint">Reel stock looks fine.</p>')}
-        ${block('Waiting on the team', null, Object.keys(byOwner).length ? Object.entries(byOwner).map(([name, o]) => `<p class="today-note"><strong>${escapeHtml(name)}:</strong> ${o.n} open${o.late ? `, <span style="color:var(--danger)">${o.late} late</span>` : ''}${o.oldest ? ` · oldest ${shortDate(o.oldest)}` : ''}</p>`).join('') : '<p class="hint">Nothing assigned to the team.</p>')}
-      </div>
-      ${writing || scriptReady ? `<p class="hint" style="margin:10px 0 0">Scripts: ${writing} being written, ${scriptReady} ready to shoot.</p>` : ''}
+      <p class="td-week">This week: <strong>${postedWeek} of ${target}</strong> posted across all accounts</p>
+      <div class="td-grid">${blocks.join('')}</div>
     </div>`;
 }
 
@@ -600,6 +626,7 @@ function renderScriptsBoard() {
           <div class="sb-who">${x.clientId ? escapeHtml(clientName(x.clientId)) : 'Any account'} ${typeBadge(x.type || 'reel')} ${x.trending ? '<span class="badge trend">Trending</span>' : ''}</div>
           <div class="sb-title">${escapeHtml(x.title)}</div>
           ${(x.collabWith || []).length ? `<div class="sb-who">${collabBadge(x)}</div>` : ''}
+          ${deadlineInfo(x) ? `<div class="sb-dl"><span class="pill dl-${deadlineInfo(x).level}">${escapeHtml(deadlineInfo(x).when)}</span><span class="pill dl-note">Closes ${shortDate(x.deadline).split(',')[1] || shortDate(x.deadline)}</span></div>` : ''}
           ${x.scriptStage !== 'shot' ? `<div class="sb-prev">${preview ? escapeHtml(preview.slice(0, 90)) : ''}</div>${lengthChip(x.script)}` : ''}
           ${x.scriptStage === 'shot' ? `<div class="sb-prev">${linked ? (linked.stage === 'posted' ? 'Posted ' + shortDate(linked.postedDate) : 'In work queue: ' + stageLabel(linked.stage)) : 'Shot'}</div>` : ''}
         </div>
@@ -609,9 +636,12 @@ function renderScriptsBoard() {
 
   const cols = SCRIPT_STAGES.map(st => {
     let list = ideas.filter(x => x.scriptStage === st.id);
-    list = list.sort((a, b) => st.id === 'shot'
-      ? (b.shotAt || b.createdAt || '').localeCompare(a.shotAt || a.createdAt || '')
-      : (b.createdAt || '').localeCompare(a.createdAt || ''));
+    list = list.sort((a, b) => {
+      if (st.id === 'shot') return (b.shotAt || b.createdAt || '').localeCompare(a.shotAt || a.createdAt || '');
+      const da = a.deadline || '9999', db = b.deadline || '9999';
+      if (da !== db) return da.localeCompare(db);
+      return (b.createdAt || '').localeCompare(a.createdAt || '');
+    });
     const open = state.scriptsOpen[st.id];
     const shown = open ? list : list.slice(0, 6);
     return `
@@ -649,7 +679,11 @@ function openScriptForm(idea) {
         <div class="field"><label>Type</label><select name="type"><option value="reel" ${x.type === 'reel' ? 'selected' : ''}>Reel</option><option value="post" ${x.type === 'post' ? 'selected' : ''}>Post</option></select></div>
         <div class="field"><label>Stage</label><select name="scriptStage">${SCRIPT_STAGES.map(s => `<option value="${s.id}" ${s.id === x.scriptStage ? 'selected' : ''}>${s.label}</option>`).join('')}</select></div>
       </div>
-      <div class="field"><label>Title</label><input name="title" value="${escapeHtml(x.title)}" required></div>
+      <div class="grid-2">
+        <div class="field"><label>Title</label><input name="title" value="${escapeHtml(x.title)}" required></div>
+        <div class="field"><label>Deadline (optional)</label><input type="date" name="deadline" value="${x.deadline || ''}" title="When the internship, course or offer closes"></div>
+      </div>
+      <p class="hint" id="deadline-hint" style="margin:-6px 0 10px"></p>
       <div class="field">
         <label style="display:flex;justify-content:space-between;align-items:center">Script <span id="script-len"></span></label>
         <textarea name="script" rows="10" placeholder="Hook (first 2 seconds)&#10;Main points&#10;Call to action">${escapeHtml(x.script)}</textarea>
@@ -671,6 +705,12 @@ function openScriptForm(idea) {
   openModal(x.id ? 'Edit script' : 'New script', html, modal => {
     const form = modal.querySelector('#script-edit');
     bindLengthChip(form.elements.script, modal.querySelector('#script-len'));
+    const dlHint = () => {
+      const d = deadlineInfo({ deadline: form.elements.deadline.value, scriptStage: 'raw' });
+      modal.querySelector('#deadline-hint').textContent = d ? `Post by ${shortDate(d.postBy)}, shoot by ${shortDate(d.shootBy)}.` : '';
+    };
+    form.elements.deadline.addEventListener('input', dlHint);
+    dlHint();
     const checked = () => [...form.querySelectorAll('input[name="collabWith"]:checked')].map(i => i.value);
     form.elements.clientId.addEventListener('change', () => {
       modal.querySelector('#script-collab').innerHTML = collabChecks(checked().filter(id => id !== form.elements.clientId.value), form.elements.clientId.value);
@@ -689,6 +729,7 @@ function openScriptForm(idea) {
         collabWith: checked().filter(id => id !== f.clientId.value),
         notes: f.notes.value.trim(),
         link: '',
+        deadline: f.deadline.value,
         trending: f.trending.checked,
         createdAt: x.createdAt || new Date().toISOString()
       });
@@ -851,7 +892,97 @@ function renderTrends() {
     <div class="list">${rows || '<div class="empty">No trends saved yet. Send Claude your links and they can be added in one go.</div>'}</div>`;
 }
 
+
+// ---------- Weekly plan vs actual ----------
+
+// For one account and one week: each planned slot with a tick if something of
+// that type went up that day, plus anything posted that wasn't in the plan.
+function planVsActual(c, weekStart) {
+  const days = [];
+  for (let d = 0; d < 7; d++) {
+    const date = addDays(weekStart, d);
+    const slots = (c.template || []).filter(sl => Number(sl.day) === d);
+    const posted = Store.data.items.filter(x => x.stage === 'posted' && x.postedDate === date && belongsTo(x, c.id));
+    const left = { reel: posted.filter(x => x.type === 'reel').length, post: posted.filter(x => x.type === 'post').length };
+    const rows = slots.map(sl => {
+      const t = sl.type === 'post' ? 'post' : 'reel';
+      const done = left[t] > 0;
+      if (done) left[t]--;
+      return { label: sl.label || 'Planned', type: t, done };
+    });
+    days.push({ date, rows, extra: left.reel + left.post });
+  }
+  return days;
+}
+
+function planGridHtml(c, weekStart, compact) {
+  const today = todayStr();
+  return planVsActual(c, weekStart).map((day, i) => {
+    const future = day.date > today;
+    const rows = day.rows.map(r => `<div class="pg-slot ${r.done ? 'done' : future ? 'future' : 'miss'}">
+        <span class="pg-mark">${r.done ? '&#10003;' : future ? '' : '&#10007;'}</span>${escapeHtml(r.label)}${compact ? '' : ` <span class="hint">${r.type === 'post' ? 'post' : 'reel'}</span>`}</div>`).join('');
+    const extra = day.extra ? `<div class="pg-extra">+${day.extra} extra posted</div>` : '';
+    return `<div class="pg-day ${day.date === today ? 'today' : ''}">
+      ${compact ? '' : `<div class="pg-head">${WEEK_DAYS[i]} <span class="hint">${parseDate(day.date).getDate()}</span></div>`}
+      ${rows || (day.extra ? '' : '<div class="pg-empty">-</div>')}${extra}
+    </div>`;
+  }).join('');
+}
+
+function weekNav(stateKey, label) {
+  const start = addDays(startOfWeek(todayStr()), 7 * state[stateKey]);
+  return `<div class="cal-head">
+      <button class="btn small" data-action="week-nav" data-key="${stateKey}" data-step="-1" aria-label="Previous week">&lt;</button>
+      <div class="month" style="min-width:150px;font-size:14px">${label || ''}${shortDate(start).split(',')[1] || ''} - ${shortDate(addDays(start, 6)).split(',')[1] || ''}</div>
+      <button class="btn small" data-action="week-nav" data-key="${stateKey}" data-step="1" aria-label="Next week">&gt;</button>
+      ${state[stateKey] ? `<button class="btn small" data-action="week-nav" data-key="${stateKey}" data-step="0">This week</button>` : ''}
+    </div>`;
+}
+
+function renderWeekPlan() {
+  const weekStart = addDays(startOfWeek(todayStr()), 7 * state.calWeek);
+  const today = todayStr();
+  const accounts = Store.activeClients().filter(c => !state.calClient || c.id === state.calClient);
+  const head = WEEK_DAYS.map((d, i) => {
+    const date = addDays(weekStart, i);
+    return `<div class="wp-h ${date === today ? 'today' : ''}">${d} <span class="hint">${parseDate(date).getDate()}</span></div>`;
+  }).join('');
+  const rows = accounts.map(c => {
+    const plan = planVsActual(c, weekStart);
+    const cells = plan.map(day => {
+      const planned = Store.data.items.filter(x => x.stage !== 'posted' && x.plannedDate === day.date && belongsTo(x, c.id));
+      const slots = day.rows.map(r => `<div class="pg-slot ${r.done ? 'done' : day.date > today ? 'future' : 'miss'}"><span class="pg-mark">${r.done ? '&#10003;' : day.date > today ? '' : '&#10007;'}</span>${escapeHtml(r.label)}</div>`).join('');
+      const pieces = planned.map(x => `<div class="chip" style="--client:${c.color}" data-action="edit-item" data-id="${x.id}" title="${escapeHtml(x.title)}"><span class="t">${x.type === 'reel' ? 'R' : 'P'}</span><span class="label">${escapeHtml(x.title)}</span></div>`).join('');
+      const extra = day.extra ? `<div class="pg-extra">+${day.extra} posted</div>` : '';
+      return `<div class="wp-cell" data-action="new-item-on" data-date="${day.date}" data-client="${c.id}">${slots}${pieces}${extra}</div>`;
+    }).join('');
+    return `<div class="wp-name"><span class="dot" style="--client:${c.color}"></span><a href="#client/${c.id}" class="client-link">${escapeHtml(c.name)}</a></div>${cells}`;
+  }).join('');
+  return `
+    <div class="page-head">
+      <div>
+        <h1>Week plan</h1>
+        <p class="sub">Each account's weekly plan with what actually went up. Reference only. Click a cell to add a piece on that day.</p>
+      </div>
+      <div class="btn-row">
+        <div class="seg"><button data-action="cal-mode" data-mode="month">Month</button><button class="active" data-action="cal-mode" data-mode="week">Week plan</button></div>
+        <select data-change="calClient" style="width:auto">${clientOptions(state.calClient, true)}</select>
+        ${weekNav('calWeek')}
+      </div>
+    </div>
+    <div class="wp-grid">
+      <div class="wp-h"></div>${head}
+      ${rows || '<div class="empty" style="grid-column:1/-1">No active accounts.</div>'}
+    </div>
+    <div class="legend">
+      <span><span class="pg-slot done" style="display:inline-flex"><span class="pg-mark">&#10003;</span>planned, went up</span></span>
+      <span><span class="pg-slot miss" style="display:inline-flex"><span class="pg-mark">&#10007;</span>planned, didn't go up</span></span>
+      <span>Coloured chips = pieces you've added for that day</span>
+    </div>`;
+}
+
 function renderCalendar() {
+  if (state.calMode === 'week') return renderWeekPlan();
   const [y, m] = state.calMonth.split('-').map(Number);
   const first = toDateStr(new Date(y, m - 1, 1));
   const gridStart = startOfWeek(first);
@@ -888,6 +1019,7 @@ function renderCalendar() {
         <p class="sub">Click a day to plan content on that date.</p>
       </div>
       <div class="btn-row">
+        <div class="seg"><button class="active" data-action="cal-mode" data-mode="month">Month</button><button data-action="cal-mode" data-mode="week">Week plan</button></div>
         <select data-change="calClient" style="width:auto">${clientOptions(state.calClient, true)}</select>
         <div class="cal-head">
           <button class="btn small" data-action="cal-prev" aria-label="Previous month">&lt;</button>
@@ -1181,8 +1313,8 @@ function renderClients() {
           <h3 style="margin:0"><a href="#client/${c.id}" class="client-link">${escapeHtml(c.name)}</a></h3>
           <span class="btn-row" style="gap:4px">${c.kind === 'brand' ? '<span class="badge brand">Own brand</span>' : ''}<span class="badge ${c.status}">${c.status === 'active' ? 'Active' : 'Paused'}</span></span>
         </div>
-        ${(c.template || []).length ? `<p class="hint">Weekly template: ${c.template.length} slots</p>` : ''}
-        <p class="hint">${c.reelsPerWeek} reels + ${c.postsPerWeek} posts per week. Shoot every ${c.shootEveryDays} days.</p>
+        ${(c.template || []).length ? `<p class="hint">Weekly plan: ${c.template.length} slots</p>` : ''}
+        <p class="hint">${plural(c.reelsPerWeek, 'reel')} + ${plural(c.postsPerWeek, 'post')} per week. Shoot every ${c.shootEveryDays} days.</p>
         <p class="hint">${n.pending} pending, ${n.ready} ready, ${n.posted} posted.</p>
         <p class="hint">${(c.categories || []).length} categories: ${escapeHtml((c.categories || []).slice(0, 4).join(', '))}${(c.categories || []).length > 4 ? '...' : ''}</p>
         ${c.notes ? `<p class="hint">${escapeHtml(c.notes)}</p>` : ''}
@@ -1271,8 +1403,8 @@ function openClientForm(client) {
         <input name="hashtags" value="${escapeHtml(c.hashtags || '')}" placeholder="#nutrition #healthyfood #vizag">
       </div>
       <div class="field">
-        <label>Weekly template (optional)</label>
-        <p class="hint" style="margin:0 0 8px">Fixed slots that repeat every week. The app adds them to the Work queue for this week and next. Leave empty for flexible posting.</p>
+        <label>Weekly plan (reference only)</label>
+        <p class="hint" style="margin:0 0 8px">What usually goes out on which day. It's only for reference: nothing is created from it and it never shows as overdue. You'll see plan vs actual on this account's page.</p>
         <div id="slot-list">${(c.template || []).map(slotRow).join('')}</div>
         <button type="button" class="btn small" id="slot-add">Add slot</button>
       </div>
@@ -1330,8 +1462,7 @@ function openClientForm(client) {
         status: f.status.value,
         notes: f.notes.value.trim()
       }));
-      Store.generateTemplateSlots();
-      closeModal();
+          closeModal();
       toast(isNew ? 'Account added' : 'Saved');
       render();
     });
@@ -1381,9 +1512,13 @@ function renderBackup() {
             <p class="hint" style="margin-top:4px">Used for the script length timer. To measure it: count the words in one of your reels and divide by its length in seconds. Most people are around 2.5.</p>
           </div>
           <div class="field">
+            <label>Deadline scripts: post this many days before the deadline</label>
+            <input type="number" min="0" max="14" name="postBuffer" value="${d.settings.postBuffer}">
+          </div>
+          <div class="field">
             <label>Team (one name per line)</label>
             <textarea name="team" rows="5">${escapeHtml((d.settings.team || []).join('\n'))}</textarea>
-            <p class="hint" style="margin-top:4px">Names you can tag on content. Just labels for your own tracking.</p>
+            <p class="hint" style="margin-top:4px">Names you can tag on content. Just labels for your own tracking. Removing a name clears it from open pieces and plans.</p>
           </div>
           <button class="btn primary" type="submit">Save settings</button>
         </form>
@@ -1457,7 +1592,7 @@ function renderClientDetail() {
         <p class="hint" style="margin:0 0 4px"><a href="#clients">Clients</a> / ${escapeHtml(c.name)}</p>
         <h1 style="display:flex;align-items:center;gap:10px"><span class="dot" style="--client:${c.color};width:14px;height:14px"></span>${escapeHtml(c.name)}
           <span class="badge ${c.status}">${c.status === 'active' ? 'Active' : 'Paused'}</span></h1>
-        <p class="sub">Target ${c.reelsPerWeek} reels + ${c.postsPerWeek} posts a week${firstDate ? ` · Posting since ${prettyDate(firstDate)}` : ''}</p>
+        <p class="sub">Target ${plural(c.reelsPerWeek, 'reel')} + ${plural(c.postsPerWeek, 'post')} a week${firstDate ? ` · Posting since ${prettyDate(firstDate)}` : ''}</p>
       </div>
       <div class="btn-row">
         <button class="btn" data-action="edit-client" data-id="${c.id}">Edit client</button>
@@ -1479,6 +1614,17 @@ function renderClientDetail() {
         ${tile(n.ready, 'Ready to post')}
       </div>
       ${alert && c.status === 'active' ? `<div class="alert ${alert.level}">${escapeHtml(alert.text)}</div>` : ''}
+    </div>
+
+    <div class="card" style="margin-bottom:24px">
+      <div class="ready-head">
+        <h2 style="margin:0">Weekly plan <span class="hint" style="font-weight:400;font-size:13px">reference only</span></h2>
+        <div class="btn-row">${(c.template || []).length ? weekNav('planWeek') : ''}<button class="btn small" data-action="edit-client" data-id="${c.id}">Edit plan</button></div>
+      </div>
+      ${(c.template || []).length
+        ? `<div class="pg-grid">${planGridHtml(c, addDays(startOfWeek(today), 7 * state.planWeek))}</div>
+           <p class="hint" style="margin:8px 0 0">&#10003; = something of that type went up that day, &#10007; = it didn't. Doesn't affect the Dashboard.</p>`
+        : '<p class="hint" style="margin:0">No weekly plan yet. Click "Edit plan" to note what usually goes out on which day.</p>'}
     </div>
 
     <div class="two-col" style="margin-bottom:24px">
@@ -1534,6 +1680,7 @@ function render() {
 function switchView(view) {
   view = view || 'dashboard';
   if (view.startsWith('client/')) {
+    if (state.clientId !== view.slice(7)) state.planWeek = 0;
     state.clientId = view.slice(7);
     view = 'client';
   }
@@ -1598,9 +1745,15 @@ function bindPageForms() {
       const sf = settingsForm.elements;
       Store.data.settings.shootLeadDays = Number(sf.shootLeadDays.value) || 0;
       Store.data.settings.speakingSpeed = Math.min(5, Math.max(1, Number(sf.speakingSpeed.value) || 2.5));
-      Store.data.settings.team = sf.team.value.split('\n').map(x => x.trim()).filter(Boolean);
+      const newTeam = sf.team.value.split('\n').map(x => x.trim()).filter(Boolean);
+      const removed = (Store.data.settings.team || []).filter(n => !newTeam.includes(n));
+      Store.removeTeamNames(removed);
+      Store.data.settings.team = newTeam;
+      const pb = Number(sf.postBuffer.value);
+      Store.data.settings.postBuffer = isNaN(pb) ? 3 : Math.max(0, Math.min(14, pb));
       Store.save();
       toast('Settings saved');
+      render();
     });
   }
 
@@ -1683,7 +1836,7 @@ document.addEventListener('click', e => {
       openItemForm({ clientId: state.pipeClient || state.calClient || undefined });
       break;
     case 'new-item-on':
-      openItemForm({ plannedDate: el.dataset.date, clientId: state.calClient || undefined });
+      openItemForm({ plannedDate: el.dataset.date, clientId: el.dataset.client || state.calClient || undefined });
       break;
     case 'edit-item': {
       e.stopPropagation();
@@ -1761,6 +1914,17 @@ document.addEventListener('click', e => {
       break;
     case 'hist-clear-month':
       state.histMonth = '';
+      render();
+      break;
+    case 'week-nav': {
+      const key = el.dataset.key;
+      const step = Number(el.dataset.step);
+      state[key] = step === 0 ? 0 : state[key] + step;
+      render();
+      break;
+    }
+    case 'cal-mode':
+      state.calMode = el.dataset.mode;
       render();
       break;
     case 'queue-tab':
@@ -1978,7 +2142,7 @@ async function startCloud() {
 
 function startApp() {
   document.body.classList.remove('booting', 'logged-out');
-  Store.generateTemplateSlots();
+  Store.cleanupTemplateItems();
   switchView(location.hash.slice(1) || 'dashboard');
 }
 
@@ -2013,7 +2177,7 @@ async function boot() {
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState !== 'visible' || !Cloud.enabled || !Cloud.user || !Store.data) return;
   if (modalRoot.innerHTML) return; // don't refresh while you're editing
-  if (await Cloud.refreshIfChanged()) { Store.generateTemplateSlots(); render(); }
+  if (await Cloud.refreshIfChanged()) render();
 });
 
 // Try to send unsynced changes before the page closes
