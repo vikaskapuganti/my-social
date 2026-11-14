@@ -15,8 +15,13 @@ const state = {
   histClient: '',
   histType: '',
   histMonth: '',
-  readyClient: '',
-  readyLastClient: ''
+  queueTab: 'to_edit',
+  queueClient: '',
+  queueOwner: '',
+  queueLastClient: '',
+  scriptClient: '',
+  scriptsOpen: {},
+  trendGenre: ''
 };
 
 const viewEl = document.getElementById('view');
@@ -76,6 +81,67 @@ function categoryDatalist() {
   return `<datalist id="all-categories">${Store.allCategories().map(c => `<option value="${escapeHtml(c)}">`).join('')}</datalist>`;
 }
 
+function teamOptions(selected, blankLabel) {
+  const team = Store.data.settings.team || [];
+  let html = `<option value="">${escapeHtml(blankLabel || 'No one')}</option>`;
+  team.forEach(name => { html += `<option ${name === selected ? 'selected' : ''}>${escapeHtml(name)}</option>`; });
+  if (selected && !team.includes(selected)) html += `<option selected>${escapeHtml(selected)}</option>`;
+  return html;
+}
+
+// Checkboxes for "Collab with" (every account except the main one)
+function collabChecks(selected, excludeId) {
+  const list = Store.data.clients.filter(c => c.id !== excludeId);
+  if (!list.length) return '<span class="hint">No other accounts</span>';
+  return list.map(c => `
+    <label class="check collab-check"><input type="checkbox" name="collabWith" value="${c.id}" ${(selected || []).includes(c.id) ? 'checked' : ''}>
+      <span class="dot" style="--client:${c.color}"></span>${escapeHtml(c.name)}</label>`).join('');
+}
+
+function collabBadge(item) {
+  const ids = (item.collabWith || []).filter(id => Store.client(id));
+  return ids.length ? `<span class="badge collab">Collab: ${ids.map(id => escapeHtml(clientName(id))).join(', ')}</span>` : '';
+}
+
+function ownerBadge(owner) {
+  return owner ? `<span class="badge owner">${escapeHtml(owner)}</span>` : '';
+}
+
+// Live "88 words · ~35s" chip for scripts
+function lengthChip(text) {
+  const l = scriptLength(text);
+  if (!l.words) return '<span class="len-chip none">No script yet</span>';
+  const tip = l.level === 'good' ? '' : l.level === 'short' ? ' · short' : ' · too long';
+  return `<span class="len-chip ${l.level}">${l.words} words · ~${l.secs}s${tip}</span>`;
+}
+
+function bindLengthChip(textarea, chipHolder) {
+  if (!textarea || !chipHolder) return;
+  const update = () => { chipHolder.innerHTML = lengthChip(textarea.value); };
+  textarea.addEventListener('input', update);
+  update();
+}
+
+function copyText(text) {
+  const done = () => toast('Copied');
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
+  } else {
+    fallbackCopy(text, done);
+  }
+}
+
+function fallbackCopy(text, done) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'absolute';
+  ta.style.left = '-9999px';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); done(); } catch (e) { toast('Could not copy'); }
+  ta.remove();
+}
+
 function itemRow(item, extraMeta) {
   const today = todayStr();
   const overdue = item.stage !== 'posted' && item.plannedDate && item.plannedDate < today;
@@ -89,8 +155,10 @@ function itemRow(item, extraMeta) {
         <div class="meta">
           ${typeBadge(item.type)}
           <span>${escapeHtml(clientName(item.clientId))}</span>
+          ${collabBadge(item)}
           ${item.category ? `<span>${escapeHtml(item.category)}</span>` : ''}
           <span>${dateText}</span>
+          ${ownerBadge(item.owner)}
           ${overdue ? '<span class="badge overdue">Overdue</span>' : ''}
           ${extraMeta || ''}
         </div>
@@ -132,7 +200,12 @@ function openItemForm(item) {
     stage: 'to_shoot',
     plannedDate: '',
     postedDate: '',
-    link: ''
+    link: '',
+    owner: '',
+    collabWith: [],
+    script: '',
+    caption: '',
+    hashtags: ''
   }, item);
 
   if (!Store.data.clients.length) {
@@ -186,8 +259,34 @@ function openItemForm(item) {
         <label>Instagram link</label>
         <input name="link" value="${escapeHtml(data.link)}" placeholder="https://www.instagram.com/reel/...">
       </div>
+      <div class="grid-2">
+        <div class="field">
+          <label>Who's doing it</label>
+          <select name="owner">${teamOptions(data.owner)}</select>
+        </div>
+        <div class="field">
+          <label>Collab with</label>
+          <div class="collab-box" id="collab-box">${collabChecks(data.collabWith, data.clientId)}</div>
+        </div>
+      </div>
       <div class="field">
-        <label>Notes (script, caption, hook, music)</label>
+        <label style="display:flex;justify-content:space-between;align-items:center">Script <span id="item-len"></span></label>
+        <textarea name="script" rows="5" placeholder="Hook, then the main points, then the call to action">${escapeHtml(data.script)}</textarea>
+      </div>
+      <div class="field">
+        <label>Caption</label>
+        <textarea name="caption" rows="3" placeholder="Caption for Instagram">${escapeHtml(data.caption)}</textarea>
+      </div>
+      <div class="field">
+        <label style="display:flex;justify-content:space-between;align-items:center">Hashtags
+          <button type="button" class="btn small" data-action="use-saved-hashtags">Use saved hashtags</button></label>
+        <input name="hashtags" value="${escapeHtml(data.hashtags)}" placeholder="#nutrition #vizag">
+      </div>
+      <div class="btn-row" style="margin:-4px 0 12px">
+        <button type="button" class="btn small" data-action="copy-caption">Copy caption + hashtags</button>
+      </div>
+      <div class="field">
+        <label>Notes (music, shots, anything else)</label>
         <textarea name="notes">${escapeHtml(data.notes)}</textarea>
       </div>
       <div class="modal-foot">
@@ -214,15 +313,28 @@ function openItemForm(item) {
     togglePosted();
     stageSel.addEventListener('change', togglePosted);
 
+    const checkedCollabs = () => [...form.querySelectorAll('input[name="collabWith"]:checked')].map(x => x.value);
     form.elements.clientId.addEventListener('change', () => {
       form.elements.category.innerHTML = categoryOptions(form.elements.clientId.value, '');
+      const keep = checkedCollabs().filter(id => id !== form.elements.clientId.value);
+      modal.querySelector('#collab-box').innerHTML = collabChecks(keep, form.elements.clientId.value);
+    });
+    bindLengthChip(form.elements.script, modal.querySelector('#item-len'));
+    modal.querySelector('[data-action="use-saved-hashtags"]').addEventListener('click', () => {
+      const c = Store.client(form.elements.clientId.value);
+      if (c && c.hashtags) form.elements.hashtags.value = c.hashtags;
+      else toast('No saved hashtags for this account yet');
+    });
+    modal.querySelector('[data-action="copy-caption"]').addEventListener('click', () => {
+      const text = [form.elements.caption.value.trim(), form.elements.hashtags.value.trim()].filter(Boolean).join('\n\n');
+      if (text) copyText(text); else toast('Write a caption first');
     });
 
     form.addEventListener('submit', e => {
       e.preventDefault();
       const f = form.elements;
       const saved = Object.assign({}, data, {
-        id: data.id || uid(),
+        id: data.id || data.presetId || uid(),
         clientId: f.clientId.value,
         type: f.type.value,
         title: f.title.value.trim(),
@@ -232,6 +344,11 @@ function openItemForm(item) {
         postedDate: f.stage.value === 'posted' ? f.postedDate.value : '',
         link: f.link.value.trim(),
         notes: f.notes.value.trim(),
+        owner: f.owner.value,
+        collabWith: checkedCollabs().filter(id => id !== f.clientId.value),
+        script: f.script.value.trim(),
+        caption: f.caption.value.trim(),
+        hashtags: f.hashtags.value.trim(),
         createdAt: data.createdAt || new Date().toISOString()
       });
       if (saved.stage === 'posted' && !saved.postedDate) {
@@ -264,7 +381,7 @@ function renderDashboard() {
   const today = todayStr();
   const weekStart = startOfWeek(today);
   const weekEnd = addDays(weekStart, 6);
-  const active = Store.activeClients();
+  const activeAll = Store.activeClients();
   const paused = Store.data.clients.filter(c => c.status === 'paused');
 
   const progressLine = (label, p, target) => {
@@ -279,7 +396,7 @@ function renderDashboard() {
       </div>`;
   };
 
-  const cards = active.map(c => {
+  const cardFor = c => {
     const prog = Calc.weekProgress(c.id, weekStart);
     const n = Calc.counts(c.id);
     const alert = Calc.shootAlert(c);
@@ -287,10 +404,10 @@ function renderDashboard() {
       <div class="card client-card" style="--client:${c.color}">
         <div class="head">
           <h3 style="margin:0"><a href="#client/${c.id}" class="client-link">${escapeHtml(c.name)}</a></h3>
-          <span class="hint">${c.reelsPerWeek} reels + ${c.postsPerWeek} posts / week</span>
+          <span class="hint">${[Number(c.reelsPerWeek) ? c.reelsPerWeek + ' reels' : '', Number(c.postsPerWeek) ? c.postsPerWeek + ' posts' : ''].filter(Boolean).join(' + ')} / week</span>
         </div>
-        ${progressLine('Reels this week', prog.reel, c.reelsPerWeek)}
-        ${progressLine('Posts this week', prog.post, c.postsPerWeek)}
+        ${Number(c.reelsPerWeek) ? progressLine('Reels this week', prog.reel, c.reelsPerWeek) : ''}
+        ${Number(c.postsPerWeek) ? progressLine('Posts this week', prog.post, c.postsPerWeek) : ''}
         <div class="stat-row">
           <div class="stat"><div class="num">${n.toShoot}</div><div class="lbl">To shoot</div></div>
           <div class="stat"><div class="num">${n.toEdit}</div><div class="lbl">To edit</div></div>
@@ -299,34 +416,13 @@ function renderDashboard() {
         </div>
         ${alert ? `<div class="alert ${alert.level}">${escapeHtml(alert.text)}</div>` : ''}
       </div>`;
-  }).join('');
+  };
+  const clientCards = activeAll.filter(c => c.kind !== 'brand').map(cardFor).join('');
+  const brandCards = activeAll.filter(c => c.kind === 'brand').map(cardFor).join('');
 
   const overdue = Calc.overdue();
   const upcoming = Calc.upcoming(7);
   const months = Calc.postedByMonth(3);
-
-  // Edited pieces waiting to go live, in one place
-  const ready = Store.data.items
-    .filter(x => x.stage === 'ready' && (!state.readyClient || x.clientId === state.readyClient))
-    .sort((a, b) => (a.plannedDate || '9999').localeCompare(b.plannedDate || '9999'));
-  const readyRows = ready.map(item => {
-    const late = item.plannedDate && item.plannedDate < today;
-    return `
-      <div class="list-item" style="--client:${clientColor(item.clientId)}">
-        <div class="main clickable" data-action="edit-item" data-id="${item.id}" style="cursor:pointer">
-          <div class="title">${escapeHtml(item.title || 'Untitled')}</div>
-          <div class="meta">
-            ${typeBadge(item.type)}
-            <span>${escapeHtml(clientName(item.clientId))}</span>
-            ${item.category ? `<span>${escapeHtml(item.category)}</span>` : ''}
-            <span>${item.plannedDate ? 'Post on ' + shortDate(item.plannedDate) : 'No posting date yet'}</span>
-            ${late ? '<span class="badge overdue">Overdue</span>' : ''}
-          </div>
-        </div>
-        <button class="btn small primary" data-action="mark-posted" data-id="${item.id}">Mark posted</button>
-      </div>`;
-  }).join('');
-  const readyClients = Store.activeClients();
 
   return `
     <div class="page-head">
@@ -337,41 +433,422 @@ function renderDashboard() {
       <button class="btn primary" data-action="new-item">Add content</button>
     </div>
 
-    ${active.length ? `<div class="cards">${cards}</div>` : '<div class="empty" style="margin-bottom:24px">No active clients. Add one on the Clients page.</div>'}
+    ${renderToday()}
+
+    <h2>Clients</h2>
+    ${clientCards ? `<div class="cards">${clientCards}</div>` : '<div class="empty" style="margin-bottom:24px">No active clients. Add one on the Clients page.</div>'}
+    ${brandCards ? `<h2>Own brands</h2><div class="cards">${brandCards}</div>` : ''}
     ${paused.length ? `<p class="hint" style="margin:-12px 0 24px">Paused: ${paused.map(c => escapeHtml(c.name)).join(', ')}</p>` : ''}
 
-    <div class="card ready-box">
-      <div class="ready-head">
-        <h2 style="margin:0">Edited, ready to post <span class="badge">${ready.length}</span></h2>
-        <select data-change="readyClient" style="width:auto">${clientOptions(state.readyClient, true)}</select>
-      </div>
-      <form id="ready-form" class="ready-form">
-        <select name="clientId" required>${clientOptions(state.readyClient || state.readyLastClient || (readyClients[0] || {}).id, false)}</select>
-        <select name="type"><option value="reel">Reel</option><option value="post">Post</option></select>
-        <input name="title" placeholder="What did you edit? e.g. Ragi laddu recipe reel" required>
-        <input type="date" name="plannedDate" title="When to post">
-        <button class="btn primary" type="submit">Add</button>
-      </form>
-      <div class="list">${readyRows || '<div class="empty">Nothing edited and waiting. Add a piece above when you finish editing.</div>'}</div>
-    </div>
+    ${renderWorkQueue()}
 
     <div class="two-col">
       <div>
         <h2>Overdue ${overdue.length ? `<span class="badge overdue">${overdue.length}</span>` : ''}</h2>
         <div class="list">${overdue.length ? overdue.map(i => itemRow(i)).join('') : '<div class="empty">Nothing overdue. Nice.</div>'}</div>
         <h2 style="margin-top:24px">Next 7 days</h2>
-        <div class="list">${upcoming.length ? upcoming.map(i => itemRow(i)).join('') : '<div class="empty">Nothing planned for the next 7 days.</div>'}</div>
+        <div class="list">${upcoming.length ? upcoming.slice(0, 6).map(i => itemRow(i)).join('') : '<div class="empty">Nothing planned for the next 7 days.</div>'}</div>
+        ${upcoming.length > 6 ? `<p class="hint" style="margin-top:8px">+${upcoming.length - 6} more. <a href="#calendar">See the calendar</a></p>` : ''}
       </div>
       <div>
         <h2>Posted per month</h2>
         <table>
           <thead><tr><th>Month</th>${Store.data.clients.map(c => `<th>${escapeHtml(c.name)}</th>`).join('')}<th>Total</th></tr></thead>
           <tbody>
-            ${months.map(m => `<tr><td>${monthLabel(m.month)}</td>${Store.data.clients.map(c => `<td>${m.byClient[c.id] || 0}</td>`).join('')}<td><strong>${m.total}</strong></td></tr>`).join('')}
+            ${months.map(m => `<tr><td>${monthLabel(m.month).replace(/ \d{4}$/, '')}</td>${Store.data.clients.map(c => `<td>${m.byClient[c.id] || 0}</td>`).join('')}<td><strong>${m.total}</strong></td></tr>`).join('')}
           </tbody>
         </table>
       </div>
+    </div>
+
+    ${renderScriptsBoard()}`;
+}
+
+
+// ---------- Dashboard: Today ----------
+
+function renderToday() {
+  const today = todayStr();
+  const items = Store.data.items;
+  const dueToday = items.filter(x => x.stage !== 'posted' && x.plannedDate === today);
+  const overdue = Calc.overdue();
+  const shoots = Store.activeClients()
+    .map(c => ({ c, a: Calc.shootAlert(c) }))
+    .filter(x => x.a && x.a.level !== 'ok');
+
+  // Waiting on the team: open pieces per person (everyone except you)
+  const byOwner = {};
+  items.forEach(x => {
+    if (x.stage === 'posted' || !x.owner || x.owner === 'Vikas') return;
+    if (x.plannedDate && x.plannedDate > addDays(today, 7)) return;
+    const o = (byOwner[x.owner] = byOwner[x.owner] || { n: 0, late: 0, oldest: '' });
+    o.n++;
+    if (x.plannedDate && x.plannedDate < today) o.late++;
+    if (x.plannedDate && (!o.oldest || x.plannedDate < o.oldest)) o.oldest = x.plannedDate;
+  });
+  const writing = Store.data.ideas.filter(x => x.scriptStage === 'writing').length;
+  const scriptReady = Store.data.ideas.filter(x => x.scriptStage === 'ready').length;
+
+  const line = x => `
+    <div class="today-line" data-action="edit-item" data-id="${x.id}">
+      <span class="dot" style="--client:${clientColor(x.clientId)}"></span>
+      <span class="t">${escapeHtml(clientName(x.clientId))} · ${escapeHtml(x.title || 'Untitled')}</span>
+      ${typeBadge(x.type)} ${ownerBadge(x.owner)}
     </div>`;
+
+  const block = (title, count, body, tone) => `
+    <div class="today-block ${tone || ''}">
+      <div class="today-title">${title}${count !== null ? ` <span class="badge">${count}</span>` : ''}</div>
+      ${body}
+    </div>`;
+
+  return `
+    <div class="card today">
+      <div class="today-head">
+        <h2 style="margin:0">Today</h2>
+        <span class="hint">${parseDate(today).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}</span>
+      </div>
+      <div class="today-grid">
+        ${block('Post today', dueToday.length, dueToday.length ? dueToday.map(line).join('') : '<p class="hint">Nothing due today.</p>')}
+        ${block('Overdue', overdue.length, overdue.length ? overdue.slice(0, 5).map(line).join('') + (overdue.length > 5 ? `<p class="hint">+${overdue.length - 5} more</p>` : '') : '<p class="hint">All caught up.</p>', overdue.length ? 'bad' : '')}
+        ${block('Shoots', null, shoots.length ? shoots.map(x => `<p class="today-note"><span class="dot" style="--client:${x.c.color}"></span> <strong>${escapeHtml(x.c.name)}:</strong> ${escapeHtml(x.a.text)}</p>`).join('') : '<p class="hint">Reel stock looks fine.</p>')}
+        ${block('Waiting on the team', null, Object.keys(byOwner).length ? Object.entries(byOwner).map(([name, o]) => `<p class="today-note"><strong>${escapeHtml(name)}:</strong> ${o.n} open${o.late ? `, <span style="color:var(--danger)">${o.late} late</span>` : ''}${o.oldest ? ` · oldest ${shortDate(o.oldest)}` : ''}</p>`).join('') : '<p class="hint">Nothing assigned to the team.</p>')}
+      </div>
+      ${writing || scriptReady ? `<p class="hint" style="margin:10px 0 0">Scripts: ${writing} being written, ${scriptReady} ready to shoot.</p>` : ''}
+    </div>`;
+}
+
+// ---------- Dashboard: Work queue ----------
+
+const QUEUE_TABS = [
+  { id: 'to_shoot', label: 'To shoot', next: 'to_edit', button: 'Mark shot' },
+  { id: 'to_edit', label: 'To edit', next: 'ready', button: 'Mark edited' },
+  { id: 'ready', label: 'Ready', next: 'posted', button: 'Mark posted' }
+];
+
+function renderWorkQueue() {
+  const today = todayStr();
+  const filtered = Store.data.items.filter(x =>
+    x.stage !== 'posted' &&
+    (!state.queueClient || belongsTo(x, state.queueClient)) &&
+    (!state.queueOwner || x.owner === state.queueOwner));
+  const tab = QUEUE_TABS.find(t => t.id === state.queueTab) || QUEUE_TABS[1];
+  const list = filtered.filter(x => x.stage === tab.id)
+    .sort((a, b) => (a.plannedDate || '9999').localeCompare(b.plannedDate || '9999'));
+  const active = Store.activeClients();
+
+  const rows = list.slice(0, 30).map(item => {
+    const late = item.plannedDate && item.plannedDate < today;
+    return `
+      <div class="list-item" style="--client:${clientColor(item.clientId)}">
+        <div class="main" data-action="edit-item" data-id="${item.id}" style="cursor:pointer">
+          <div class="title">${escapeHtml(item.title || 'Untitled')}</div>
+          <div class="meta">
+            ${typeBadge(item.type)}
+            <span>${escapeHtml(clientName(item.clientId))}</span>
+            ${collabBadge(item)}
+            <span>${item.plannedDate ? 'Post ' + shortDate(item.plannedDate) : 'No date'}</span>
+            ${ownerBadge(item.owner)}
+            ${item.script ? lengthChip(item.script) : ''}
+            ${late ? '<span class="badge overdue">Overdue</span>' : ''}
+          </div>
+        </div>
+        <button class="btn small primary" data-action="queue-next" data-id="${item.id}" data-next="${tab.next}">${tab.button}</button>
+      </div>`;
+  }).join('');
+
+  return `
+    <div class="card queue-box">
+      <div class="ready-head">
+        <h2 style="margin:0">Work queue</h2>
+        <div class="btn-row">
+          <select data-change="queueClient" style="width:auto">${clientOptions(state.queueClient, true, 'All accounts')}</select>
+          <select data-change="queueOwner" style="width:auto">${teamOptions(state.queueOwner, 'Everyone')}</select>
+        </div>
+      </div>
+      <form id="queue-form" class="queue-form">
+        <select name="clientId" required>${clientOptions(state.queueClient || state.queueLastClient || (active[0] || {}).id, false)}</select>
+        <select name="type"><option value="reel">Reel</option><option value="post">Post</option></select>
+        <select name="stage">${QUEUE_TABS.map(t => `<option value="${t.id}" ${t.id === state.queueTab ? 'selected' : ''}>${t.label}</option>`).join('')}</select>
+        <input name="title" placeholder="What is it? e.g. Ragi laddu recipe reel" required>
+        <input type="date" name="plannedDate" title="Posting date">
+        <select name="owner">${teamOptions('', 'Who?')}</select>
+        <button class="btn primary" type="submit">Add</button>
+      </form>
+      <div class="tabs">
+        ${QUEUE_TABS.map(t => `<button class="tab ${t.id === tab.id ? 'active' : ''}" data-action="queue-tab" data-tab="${t.id}">${t.label} <span class="badge">${filtered.filter(x => x.stage === t.id).length}</span></button>`).join('')}
+      </div>
+      <div class="list">${rows || `<div class="empty">Nothing in "${tab.label}" right now.</div>`}</div>
+      ${list.length > 30 ? `<p class="hint" style="margin-top:8px">Showing 30 of ${list.length}. Use the Pipeline page for everything.</p>` : ''}
+    </div>`;
+}
+
+// ---------- Dashboard: Scripts board ----------
+
+function renderScriptsBoard() {
+  const ideas = Store.data.ideas.filter(x => !state.scriptClient || x.clientId === state.scriptClient || (x.collabWith || []).includes(state.scriptClient));
+  const chips = [{ id: '', name: 'All' }, ...Store.data.clients.filter(c => c.status === 'active')].map(c =>
+    `<button class="chip-btn ${state.scriptClient === c.id ? 'active' : ''}" data-action="script-filter" data-id="${c.id}">${c.id ? `<span class="dot" style="--client:${c.color}"></span>` : ''}${escapeHtml(c.name)}</button>`).join('');
+
+  const nextButton = { raw: 'Start writing', writing: 'Script done', ready: 'Shoot done' };
+  const card = x => {
+    const linked = x.itemId ? Store.item(x.itemId) : null;
+    const preview = (x.script || '').trim().split(/\n/)[0];
+    return `
+      <div class="sb-card" style="--client:${x.clientId ? clientColor(x.clientId) : 'var(--border)'}">
+        <div class="sb-open" data-action="edit-script" data-id="${x.id}">
+          <div class="sb-who">${x.clientId ? escapeHtml(clientName(x.clientId)) : 'Any account'} ${typeBadge(x.type || 'reel')} ${x.trending ? '<span class="badge trend">Trending</span>' : ''}</div>
+          <div class="sb-title">${escapeHtml(x.title)}</div>
+          ${(x.collabWith || []).length ? `<div class="sb-who">${collabBadge(x)}</div>` : ''}
+          ${x.scriptStage !== 'shot' ? `<div class="sb-prev">${preview ? escapeHtml(preview.slice(0, 90)) : ''}</div>${lengthChip(x.script)}` : ''}
+          ${x.scriptStage === 'shot' ? `<div class="sb-prev">${linked ? (linked.stage === 'posted' ? 'Posted ' + shortDate(linked.postedDate) : 'In work queue: ' + stageLabel(linked.stage)) : 'Shot'}</div>` : ''}
+        </div>
+        ${nextButton[x.scriptStage] ? `<button class="btn small sb-btn" data-action="script-next" data-id="${x.id}">${nextButton[x.scriptStage]}</button>` : ''}
+      </div>`;
+  };
+
+  const cols = SCRIPT_STAGES.map(st => {
+    let list = ideas.filter(x => x.scriptStage === st.id);
+    list = list.sort((a, b) => st.id === 'shot'
+      ? (b.shotAt || b.createdAt || '').localeCompare(a.shotAt || a.createdAt || '')
+      : (b.createdAt || '').localeCompare(a.createdAt || ''));
+    const open = state.scriptsOpen[st.id];
+    const shown = open ? list : list.slice(0, 6);
+    return `
+      <div class="sb-col">
+        <div class="sb-head"><span>${st.label}</span><span class="badge">${list.length}</span></div>
+        ${shown.map(card).join('') || '<p class="hint">Nothing here</p>'}
+        ${list.length > 6 ? `<button class="btn small" style="width:100%" data-action="script-more" data-col="${st.id}">${open ? 'Show less' : `Show ${list.length - 6} more`}</button>` : ''}
+      </div>`;
+  }).join('');
+
+  const active = Store.activeClients();
+  return `
+    <div class="scripts-section">
+      <div class="ready-head">
+        <h2 style="margin:0">Scripts</h2>
+        <div class="chip-row">${chips}</div>
+      </div>
+      <form id="script-form" class="script-form">
+        <select name="clientId">${clientOptions(state.scriptClient || (active[0] || {}).id, true, 'Any account')}</select>
+        <select name="type"><option value="reel">Reel</option><option value="post">Post</option></select>
+        <input name="title" placeholder="New idea, e.g. 3 internships nobody talks about" required>
+        <button class="btn primary" type="submit">Add idea</button>
+      </form>
+      <div class="sb-board">${cols}</div>
+      <p class="hint" style="margin-top:8px">Length chip: green = 30-40 sec, amber = short, red = too long. Based on your speaking speed in Settings.</p>
+    </div>`;
+}
+
+function openScriptForm(idea) {
+  const x = Object.assign({ title: '', clientId: '', type: 'reel', script: '', notes: '', link: '', collabWith: [], owner: '', scriptStage: 'raw', trending: false }, idea);
+  const html = `
+    <form id="script-edit">
+      <div class="grid-3">
+        <div class="field"><label>Account</label><select name="clientId">${clientOptions(x.clientId, true, 'Any account')}</select></div>
+        <div class="field"><label>Type</label><select name="type"><option value="reel" ${x.type === 'reel' ? 'selected' : ''}>Reel</option><option value="post" ${x.type === 'post' ? 'selected' : ''}>Post</option></select></div>
+        <div class="field"><label>Stage</label><select name="scriptStage">${SCRIPT_STAGES.map(s => `<option value="${s.id}" ${s.id === x.scriptStage ? 'selected' : ''}>${s.label}</option>`).join('')}</select></div>
+      </div>
+      <div class="field"><label>Title</label><input name="title" value="${escapeHtml(x.title)}" required></div>
+      <div class="field">
+        <label style="display:flex;justify-content:space-between;align-items:center">Script <span id="script-len"></span></label>
+        <textarea name="script" rows="10" placeholder="Hook (first 2 seconds)&#10;Main points&#10;Call to action">${escapeHtml(x.script)}</textarea>
+      </div>
+      <div class="grid-2">
+        <div class="field"><label>Who's doing it</label><select name="owner">${teamOptions(x.owner)}</select></div>
+        <div class="field"><label>Collab with</label><div class="collab-box" id="script-collab">${collabChecks(x.collabWith, x.clientId)}</div></div>
+      </div>
+      <div class="field"><label>Notes / reference link</label><textarea name="notes" rows="2">${escapeHtml([x.notes, x.link].filter(Boolean).join('\n'))}</textarea></div>
+      <label class="check" style="margin-bottom:8px"><input type="checkbox" name="trending" ${x.trending ? 'checked' : ''}> Trending</label>
+      <div class="modal-foot">
+        <div>${x.id ? '<button type="button" class="btn danger" data-action="delete-script">Delete</button>' : ''}</div>
+        <div class="btn-row">
+          <button type="button" class="btn" data-action="close-modal">Cancel</button>
+          <button type="submit" class="btn primary">Save</button>
+        </div>
+      </div>
+    </form>`;
+  openModal(x.id ? 'Edit script' : 'New script', html, modal => {
+    const form = modal.querySelector('#script-edit');
+    bindLengthChip(form.elements.script, modal.querySelector('#script-len'));
+    const checked = () => [...form.querySelectorAll('input[name="collabWith"]:checked')].map(i => i.value);
+    form.elements.clientId.addEventListener('change', () => {
+      modal.querySelector('#script-collab').innerHTML = collabChecks(checked().filter(id => id !== form.elements.clientId.value), form.elements.clientId.value);
+    });
+    form.addEventListener('submit', e => {
+      e.preventDefault();
+      const f = form.elements;
+      const saved = Object.assign({}, x, {
+        id: x.id || uid(),
+        title: f.title.value.trim(),
+        clientId: f.clientId.value,
+        type: f.type.value,
+        scriptStage: f.scriptStage.value,
+        script: f.script.value.trim(),
+        owner: f.owner.value,
+        collabWith: checked().filter(id => id !== f.clientId.value),
+        notes: f.notes.value.trim(),
+        link: '',
+        trending: f.trending.checked,
+        createdAt: x.createdAt || new Date().toISOString()
+      });
+      if (saved.scriptStage === 'shot' && x.scriptStage !== 'shot') {
+        if (!shootDone(saved)) return;
+      } else {
+        Store.saveIdea(saved);
+      }
+      closeModal();
+      toast('Script saved');
+      render();
+    });
+    const del = modal.querySelector('[data-action="delete-script"]');
+    if (del) del.addEventListener('click', () => {
+      if (confirm('Delete this script?')) { Store.deleteIdea(x.id); closeModal(); render(); }
+    });
+  });
+}
+
+// Script is shot: create the content piece in the Work queue (To edit)
+function shootDone(idea) {
+  if (!idea.clientId) {
+    toast('Pick which account this is for first');
+    openScriptForm(idea);
+    return false;
+  }
+  const item = {
+    id: uid(),
+    clientId: idea.clientId,
+    type: idea.type || 'reel',
+    title: idea.title,
+    category: idea.category || '',
+    stage: 'to_edit',
+    plannedDate: '',
+    postedDate: '',
+    link: '',
+    notes: idea.notes || '',
+    script: idea.script || '',
+    caption: '',
+    hashtags: '',
+    owner: idea.owner || '',
+    collabWith: idea.collabWith || [],
+    fromScript: idea.id,
+    createdAt: new Date().toISOString()
+  };
+  Store.saveItem(item);
+  idea.scriptStage = 'shot';
+  idea.used = true;
+  idea.itemId = item.id;
+  idea.shotAt = new Date().toISOString();
+  Store.saveIdea(idea);
+  toast('Moved to Work queue: To edit');
+  return true;
+}
+
+function bindQueueAndScripts() {
+  const qf = document.getElementById('queue-form');
+  if (qf) {
+    qf.addEventListener('submit', e => {
+      e.preventDefault();
+      const f = qf.elements;
+      state.queueLastClient = f.clientId.value;
+      Store.saveItem({
+        id: uid(), clientId: f.clientId.value, type: f.type.value, title: f.title.value.trim(),
+        category: '', stage: f.stage.value, plannedDate: f.plannedDate.value, postedDate: '', link: '',
+        notes: '', script: '', caption: '', hashtags: '', owner: f.owner.value, collabWith: [],
+        createdAt: new Date().toISOString()
+      });
+      state.queueTab = f.stage.value;
+      toast('Added to work queue');
+      render();
+    });
+  }
+  const sf = document.getElementById('script-form');
+  if (sf) {
+    sf.addEventListener('submit', e => {
+      e.preventDefault();
+      const f = sf.elements;
+      Store.saveIdea({
+        id: uid(), title: f.title.value.trim(), clientId: f.clientId.value, type: f.type.value,
+        category: '', link: '', notes: '', script: '', owner: '', collabWith: [], trending: false,
+        used: false, scriptStage: 'raw', createdAt: new Date().toISOString()
+      });
+      toast('Idea added');
+      render();
+    });
+  }
+  const tf = document.getElementById('trend-form');
+  if (tf) {
+    tf.addEventListener('submit', e => {
+      e.preventDefault();
+      const f = tf.elements;
+      Store.saveTrend({
+        id: uid(), url: f.url.value.trim(), audio: f.audio.value.trim(), genre: f.genre.value.trim(),
+        notes: f.notes.value.trim(), addedAt: todayStr(), used: false
+      });
+      toast('Trend saved');
+      render();
+    });
+  }
+}
+
+// ---------- Trends page ----------
+
+function trendAge(t) {
+  const days = Math.round((parseDate(todayStr()) - parseDate(t.addedAt || todayStr())) / 86400000);
+  if (days < 7) return { cls: 'fresh', label: 'Fresh' };
+  if (days < 14) return { cls: 'ageing', label: 'Ageing' };
+  return { cls: 'old', label: 'Old' };
+}
+
+function renderTrends() {
+  const genres = [...new Set([...DEFAULT_GENRES, ...Store.data.trends.map(t => t.genre).filter(Boolean)])];
+  const list = Store.data.trends
+    .filter(t => !state.trendGenre || t.genre === state.trendGenre)
+    .sort((a, b) => (b.addedAt || '').localeCompare(a.addedAt || ''));
+  const rows = list.map(t => {
+    const age = trendAge(t);
+    return `
+      <div class="list-item ${t.used ? 'faded' : ''}">
+        <div class="main">
+          <div class="title">${escapeHtml(t.audio || 'Trend')}</div>
+          <div class="meta">
+            <span class="badge age-${age.cls}">${age.label}</span>
+            ${t.genre ? `<span class="badge">${escapeHtml(t.genre)}</span>` : ''}
+            <span>Added ${shortDate(t.addedAt)}</span>
+            ${t.url ? `<a href="${escapeHtml(t.url)}" target="_blank" rel="noopener">Open reel</a>` : ''}
+            ${t.used ? '<span>Used</span>' : ''}
+          </div>
+          ${t.notes ? `<div class="hint" style="margin-top:4px">${escapeHtml(t.notes)}</div>` : ''}
+        </div>
+        <div class="btn-row">
+          ${t.used ? '' : `<button class="btn small primary" data-action="trend-use" data-id="${t.id}">Use this</button>`}
+          <button class="btn small danger" data-action="trend-delete" data-id="${t.id}">Delete</button>
+        </div>
+      </div>`;
+  }).join('');
+  return `
+    <div class="page-head">
+      <div>
+        <h1>Trends</h1>
+        <p class="sub">Trending reels and audio worth copying, sorted by genre. Trends go stale fast, so use the fresh ones first.</p>
+      </div>
+    </div>
+    <datalist id="trend-genres">${genres.map(g => `<option value="${escapeHtml(g)}">`).join('')}</datalist>
+    <form id="trend-form" class="card" style="margin-bottom:20px">
+      <div class="grid-3">
+        <div class="field" style="grid-column: span 2"><label>Reel or audio link</label><input name="url" placeholder="https://www.instagram.com/reel/..."></div>
+        <div class="field"><label>Genre</label><input name="genre" list="trend-genres" placeholder="Education" required></div>
+      </div>
+      <div class="grid-2">
+        <div class="field"><label>Audio / trend name</label><input name="audio" placeholder="Name of the sound or format" required></div>
+        <div class="field"><label>Why it works</label><input name="notes" placeholder="Hook in first 2 sec, text overlay"></div>
+      </div>
+      <div class="btn-row" style="justify-content:flex-end"><button class="btn primary" type="submit">Save trend</button></div>
+    </form>
+    <div class="chip-row" style="margin-bottom:16px">
+      ${['', ...genres].map(g => `<button class="chip-btn ${state.trendGenre === g ? 'active' : ''}" data-action="trend-genre" data-genre="${escapeHtml(g)}">${g ? escapeHtml(g) : 'All'}</button>`).join('')}
+    </div>
+    <div class="list">${rows || '<div class="empty">No trends saved yet. Send Claude your links and they can be added in one go.</div>'}</div>`;
 }
 
 function renderCalendar() {
@@ -380,7 +857,7 @@ function renderCalendar() {
   const gridStart = startOfWeek(first);
   const today = todayStr();
 
-  const items = Store.data.items.filter(x => !state.calClient || x.clientId === state.calClient);
+  const items = Store.data.items.filter(x => !state.calClient || belongsTo(x, state.calClient));
   const byDate = {};
   items.forEach(item => {
     const d = item.stage === 'posted' ? item.postedDate : item.plannedDate;
@@ -433,7 +910,7 @@ function renderCalendar() {
 }
 
 function renderPipeline() {
-  const items = Store.data.items.filter(x => !state.pipeClient || x.clientId === state.pipeClient);
+  const items = Store.data.items.filter(x => !state.pipeClient || belongsTo(x, state.pipeClient));
   const columns = STAGES.map(stage => {
     let list = items.filter(x => x.stage === stage.id);
     if (stage.id === 'posted') {
@@ -651,7 +1128,7 @@ function renderFootage() {
 
 function renderHistory() {
   let posted = Store.data.items.filter(x => x.stage === 'posted');
-  if (state.histClient) posted = posted.filter(x => x.clientId === state.histClient);
+  if (state.histClient) posted = posted.filter(x => belongsTo(x, state.histClient));
   if (state.histType) posted = posted.filter(x => x.type === state.histType);
   if (state.histMonth) posted = posted.filter(x => (x.postedDate || '').startsWith(state.histMonth));
   posted.sort((a, b) => (b.postedDate || '').localeCompare(a.postedDate || ''));
@@ -702,8 +1179,9 @@ function renderClients() {
       <div class="card client-card" style="--client:${c.color}">
         <div class="head">
           <h3 style="margin:0"><a href="#client/${c.id}" class="client-link">${escapeHtml(c.name)}</a></h3>
-          <span class="badge ${c.status}">${c.status === 'active' ? 'Active' : 'Paused'}</span>
+          <span class="btn-row" style="gap:4px">${c.kind === 'brand' ? '<span class="badge brand">Own brand</span>' : ''}<span class="badge ${c.status}">${c.status === 'active' ? 'Active' : 'Paused'}</span></span>
         </div>
+        ${(c.template || []).length ? `<p class="hint">Weekly template: ${c.template.length} slots</p>` : ''}
         <p class="hint">${c.reelsPerWeek} reels + ${c.postsPerWeek} posts per week. Shoot every ${c.shootEveryDays} days.</p>
         <p class="hint">${n.pending} pending, ${n.ready} ready, ${n.posted} posted.</p>
         <p class="hint">${(c.categories || []).length} categories: ${escapeHtml((c.categories || []).slice(0, 4).join(', '))}${(c.categories || []).length > 4 ? '...' : ''}</p>
@@ -719,10 +1197,10 @@ function renderClients() {
   return `
     <div class="page-head">
       <div>
-        <h1>Clients</h1>
-        <p class="sub">Weekly targets, categories and shoot rhythm for each client.</p>
+        <h1>Clients and brands</h1>
+        <p class="sub">Weekly targets, templates, categories and shoot rhythm for each account.</p>
       </div>
-      <button class="btn primary" data-action="new-client">Add client</button>
+      <button class="btn primary" data-action="new-client">Add client or brand</button>
     </div>
     <div class="cards">${cards || '<div class="empty">No clients yet.</div>'}</div>`;
 }
@@ -736,15 +1214,34 @@ function openClientForm(client) {
     postsPerWeek: 2,
     shootEveryDays: 14,
     status: 'active',
+    kind: 'client',
     categories: [],
+    hashtags: '',
+    template: [],
     notes: ''
   };
+  const slotRow = sl => `
+    <div class="slot-row" data-slot="${sl.id || uid()}">
+      <select name="slotDay">${WEEK_DAYS.map((d, i) => `<option value="${i}" ${Number(sl.day) === i ? 'selected' : ''}>${d}</option>`).join('')}</select>
+      <select name="slotType"><option value="reel" ${sl.type !== 'post' ? 'selected' : ''}>Reel</option><option value="post" ${sl.type === 'post' ? 'selected' : ''}>Post</option></select>
+      <input name="slotLabel" value="${escapeHtml(sl.label || '')}" placeholder="e.g. Internship reel">
+      <select name="slotOwner">${teamOptions(sl.owner, 'Who?')}</select>
+      <select name="slotCollab"><option value="">No collab</option>${Store.data.clients.filter(x => x.id !== c.id).map(x => `<option value="${x.id}" ${sl.collabWith === x.id ? 'selected' : ''}>Collab: ${escapeHtml(x.name)}</option>`).join('')}</select>
+      <button type="button" class="btn small danger" data-slot-remove aria-label="Remove slot">&times;</button>
+    </div>`;
   const html = `
     <form id="client-form">
-      <div class="grid-2">
+      <div class="grid-3">
         <div class="field">
-          <label>Client name</label>
+          <label>Name</label>
           <input name="name" value="${escapeHtml(c.name)}" required>
+        </div>
+        <div class="field">
+          <label>Type</label>
+          <select name="kind">
+            <option value="client" ${c.kind !== 'brand' ? 'selected' : ''}>Client</option>
+            <option value="brand" ${c.kind === 'brand' ? 'selected' : ''}>Own brand</option>
+          </select>
         </div>
         <div class="field">
           <label>Colour</label>
@@ -767,7 +1264,17 @@ function openClientForm(client) {
       </div>
       <div class="field">
         <label>Content categories (one per line)</label>
-        <textarea name="categories" rows="6">${escapeHtml((c.categories || []).join('\n'))}</textarea>
+        <textarea name="categories" rows="5">${escapeHtml((c.categories || []).join('\n'))}</textarea>
+      </div>
+      <div class="field">
+        <label>Saved hashtags</label>
+        <input name="hashtags" value="${escapeHtml(c.hashtags || '')}" placeholder="#nutrition #healthyfood #vizag">
+      </div>
+      <div class="field">
+        <label>Weekly template (optional)</label>
+        <p class="hint" style="margin:0 0 8px">Fixed slots that repeat every week. The app adds them to the Work queue for this week and next. Leave empty for flexible posting.</p>
+        <div id="slot-list">${(c.template || []).map(slotRow).join('')}</div>
+        <button type="button" class="btn small" id="slot-add">Add slot</button>
       </div>
       <div class="field">
         <label>Status</label>
@@ -789,12 +1296,30 @@ function openClientForm(client) {
       </div>
     </form>`;
 
-  openModal(isNew ? 'New client' : 'Edit client', html, modal => {
+  openModal(isNew ? 'New account' : 'Edit account', html, modal => {
     const form = modal.querySelector('#client-form');
+    const slotList = modal.querySelector('#slot-list');
+    modal.querySelector('#slot-add').addEventListener('click', () => {
+      slotList.insertAdjacentHTML('beforeend', slotRow({ id: uid(), day: 0, type: 'reel', label: '', owner: '', collabWith: '' }));
+    });
+    slotList.addEventListener('click', e => {
+      if (e.target.closest('[data-slot-remove]')) e.target.closest('.slot-row').remove();
+    });
     form.addEventListener('submit', e => {
       e.preventDefault();
       const f = form.elements;
+      const template = [...slotList.querySelectorAll('.slot-row')].map(row => ({
+        id: row.dataset.slot,
+        day: Number(row.querySelector('[name="slotDay"]').value),
+        type: row.querySelector('[name="slotType"]').value,
+        label: row.querySelector('[name="slotLabel"]').value.trim() || 'Planned content',
+        owner: row.querySelector('[name="slotOwner"]').value,
+        collabWith: row.querySelector('[name="slotCollab"]').value
+      }));
       Store.saveClient(Object.assign({}, c, {
+        kind: f.kind.value,
+        hashtags: f.hashtags.value.trim(),
+        template,
         id: c.id || uid(),
         name: f.name.value.trim(),
         color: f.color.value,
@@ -805,8 +1330,9 @@ function openClientForm(client) {
         status: f.status.value,
         notes: f.notes.value.trim()
       }));
+      Store.generateTemplateSlots();
       closeModal();
-      toast(isNew ? 'Client added' : 'Client saved');
+      toast(isNew ? 'Account added' : 'Saved');
       render();
     });
     const del = modal.querySelector('[data-action="delete-client"]');
@@ -835,7 +1361,7 @@ function renderBackup() {
     <div class="two-col">
       <div class="card">
         <h2>Backup</h2>
-        <p class="hint">${d.clients.length} clients, ${d.items.length} content pieces, ${d.ideas.length} ideas, ${d.footage.length} clips.</p>
+        <p class="hint">${d.clients.length} accounts, ${d.items.length} content pieces, ${d.ideas.length} ideas and scripts, ${d.footage.length} clips, ${d.trends.length} trends.</p>
         <div class="btn-row" style="margin:12px 0">
           <button class="btn primary" data-action="export">Export backup</button>
           <label class="btn" style="margin:0">Import backup<input type="file" id="import-file" accept=".json,application/json" hidden></label>
@@ -849,11 +1375,21 @@ function renderBackup() {
             <label>Shoot reminder: days before reel stock runs out</label>
             <input type="number" min="0" name="shootLeadDays" value="${d.settings.shootLeadDays}">
           </div>
+          <div class="field">
+            <label>My speaking speed (words per second)</label>
+            <input type="number" min="1" max="5" step="0.1" name="speakingSpeed" value="${d.settings.speakingSpeed}">
+            <p class="hint" style="margin-top:4px">Used for the script length timer. To measure it: count the words in one of your reels and divide by its length in seconds. Most people are around 2.5.</p>
+          </div>
+          <div class="field">
+            <label>Team (one name per line)</label>
+            <textarea name="team" rows="5">${escapeHtml((d.settings.team || []).join('\n'))}</textarea>
+            <p class="hint" style="margin-top:4px">Names you can tag on content. Just labels for your own tracking.</p>
+          </div>
           <button class="btn primary" type="submit">Save settings</button>
         </form>
         <hr style="border:none;border-top:1px solid var(--border);margin:20px 0">
         <h3>Start over</h3>
-        <p class="hint">Deletes everything and puts back the two starting clients.</p>
+        <p class="hint">Deletes everything and puts back the starting accounts.</p>
         <button class="btn danger" data-action="reset">Reset app</button>
       </div>
     </div>`;
@@ -866,7 +1402,7 @@ function renderClientDetail() {
   const c = Store.client(state.clientId);
   if (!c) return renderClients();
   const today = todayStr();
-  const items = Store.data.items.filter(x => x.clientId === c.id);
+  const items = Store.data.items.filter(x => belongsTo(x, c.id));
   const posted = items.filter(x => x.stage === 'posted').sort((a, b) => (b.postedDate || '').localeCompare(a.postedDate || ''));
   const reels = posted.filter(x => x.type === 'reel').length;
   const posts = posted.length - reels;
@@ -983,6 +1519,7 @@ const PAGES = {
   ideas: renderIdeas,
   footage: renderFootage,
   history: renderHistory,
+  trends: renderTrends,
   clients: renderClients,
   client: renderClientDetail,
   backup: renderBackup
@@ -1032,29 +1569,7 @@ function bindPageForms() {
     });
   }
 
-  const readyForm = document.getElementById('ready-form');
-  if (readyForm) {
-    readyForm.addEventListener('submit', e => {
-      e.preventDefault();
-      const f = readyForm.elements;
-      state.readyLastClient = f.clientId.value;
-      Store.saveItem({
-        id: uid(),
-        clientId: f.clientId.value,
-        type: f.type.value,
-        title: f.title.value.trim(),
-        category: '',
-        stage: 'ready',
-        plannedDate: f.plannedDate.value,
-        postedDate: '',
-        link: '',
-        notes: '',
-        createdAt: new Date().toISOString()
-      });
-      toast('Added to ready to post');
-      render();
-    });
-  }
+  bindQueueAndScripts();
 
   const footForm = document.getElementById('footage-form');
   if (footForm) {
@@ -1080,7 +1595,10 @@ function bindPageForms() {
   if (settingsForm) {
     settingsForm.addEventListener('submit', e => {
       e.preventDefault();
-      Store.data.settings.shootLeadDays = Number(settingsForm.elements.shootLeadDays.value) || 0;
+      const sf = settingsForm.elements;
+      Store.data.settings.shootLeadDays = Number(sf.shootLeadDays.value) || 0;
+      Store.data.settings.speakingSpeed = Math.min(5, Math.max(1, Number(sf.speakingSpeed.value) || 2.5));
+      Store.data.settings.team = sf.team.value.split('\n').map(x => x.trim()).filter(Boolean);
       Store.save();
       toast('Settings saved');
     });
@@ -1191,14 +1709,23 @@ document.addEventListener('click', e => {
     case 'idea-to-content': {
       const idea = Store.data.ideas.find(x => x.id === id);
       if (!idea) break;
+      const newId = uid();
       idea.used = true;
+      idea.scriptStage = 'shot';
+      idea.itemId = newId;
+      idea.shotAt = new Date().toISOString();
       Store.saveIdea(idea);
       render();
       openItemForm({
+        id: undefined,
+        presetId: newId,
         title: idea.title,
         clientId: idea.clientId || undefined,
         type: idea.type || 'reel',
         category: idea.category,
+        script: idea.script || '',
+        collabWith: idea.collabWith || [],
+        owner: idea.owner || '',
         notes: [idea.notes, idea.link].filter(Boolean).join('\n'),
         stage: 'to_shoot'
       });
@@ -1235,6 +1762,65 @@ document.addEventListener('click', e => {
     case 'hist-clear-month':
       state.histMonth = '';
       render();
+      break;
+    case 'queue-tab':
+      state.queueTab = el.dataset.tab;
+      render();
+      break;
+    case 'queue-next':
+      moveItem(id, el.dataset.next);
+      break;
+    case 'script-filter':
+      state.scriptClient = id || '';
+      render();
+      break;
+    case 'script-more':
+      state.scriptsOpen[el.dataset.col] = !state.scriptsOpen[el.dataset.col];
+      render();
+      break;
+    case 'edit-script': {
+      const idea = Store.data.ideas.find(x => x.id === id);
+      if (idea) openScriptForm(Object.assign({}, idea));
+      break;
+    }
+    case 'script-next': {
+      const idea = Store.data.ideas.find(x => x.id === id);
+      if (!idea) break;
+      if (idea.scriptStage === 'raw') {
+        idea.scriptStage = 'writing';
+        Store.saveIdea(idea);
+        render();
+        openScriptForm(Object.assign({}, idea));
+      } else if (idea.scriptStage === 'writing') {
+        idea.scriptStage = 'ready';
+        Store.saveIdea(idea);
+        toast('Script ready to shoot');
+        render();
+      } else if (idea.scriptStage === 'ready') {
+        if (shootDone(idea)) render();
+      }
+      break;
+    }
+    case 'trend-genre':
+      state.trendGenre = el.dataset.genre || '';
+      render();
+      break;
+    case 'trend-use': {
+      const t = Store.data.trends.find(x => x.id === id);
+      if (!t) break;
+      t.used = true;
+      Store.saveTrend(t);
+      Store.saveIdea({
+        id: uid(), title: t.audio || 'Trend idea', clientId: '', type: 'reel', category: 'Trend-Led',
+        link: t.url || '', notes: t.notes || '', script: '', owner: '', collabWith: [], trending: true,
+        used: false, scriptStage: 'raw', createdAt: new Date().toISOString()
+      });
+      toast('Added to Scripts as a raw idea');
+      render();
+      break;
+    }
+    case 'trend-delete':
+      if (confirm('Delete this trend?')) { Store.deleteTrend(id); render(); }
       break;
     case 'mark-posted':
       moveItem(id, 'posted');
@@ -1392,6 +1978,7 @@ async function startCloud() {
 
 function startApp() {
   document.body.classList.remove('booting', 'logged-out');
+  Store.generateTemplateSlots();
   switchView(location.hash.slice(1) || 'dashboard');
 }
 
@@ -1426,7 +2013,7 @@ async function boot() {
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState !== 'visible' || !Cloud.enabled || !Cloud.user || !Store.data) return;
   if (modalRoot.innerHTML) return; // don't refresh while you're editing
-  if (await Cloud.refreshIfChanged()) render();
+  if (await Cloud.refreshIfChanged()) { Store.generateTemplateSlots(); render(); }
 });
 
 // Try to send unsynced changes before the page closes

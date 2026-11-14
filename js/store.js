@@ -11,6 +11,18 @@ const STAGES = [
   { id: 'posted', label: 'Posted' }
 ];
 
+const WEEK_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+const SCRIPT_STAGES = [
+  { id: 'raw', label: 'Raw idea' },
+  { id: 'writing', label: 'Writing' },
+  { id: 'ready', label: 'Script ready' },
+  { id: 'shot', label: 'Shot' }
+];
+
+const DEFAULT_TEAM = ['Vikas', 'Sruthi', 'Hardik', 'Spandana', 'Aparna', 'Student Leads'];
+const DEFAULT_GENRES = ['Nutrition/Food', 'Cafe', 'Education', 'Personal', 'Tech', 'Comedy'];
+
 const CLIENT_COLORS = ['#185FA5', '#0F6E56', '#993C1D', '#534AB7', '#993556', '#854F0B', '#3B6D11', '#5F5E5A'];
 
 // ---------- Small helpers ----------
@@ -110,12 +122,58 @@ function seedData() {
   };
   return {
     version: 1,
-    settings: { shootLeadDays: 5 },
-    clients: [kerbside, nutraahi],
+    settings: { shootLeadDays: 5, speakingSpeed: 2.5, team: DEFAULT_TEAM.slice(), brandsAdded: true, generated: {} },
+    clients: [kerbside, nutraahi, ...ownBrands()],
     items: [],
     ideas: [],
-    footage: []
+    footage: [],
+    trends: []
   };
+}
+
+// Own brands: EduMoon and Vikas Senior, with their weekly posting format.
+// Vikas's face-to-camera reels live on Vikas Senior as collabs with EduMoon,
+// so each one counts for both accounts without being entered twice.
+function ownBrands() {
+  const edumoon = {
+    id: uid(),
+    name: 'EduMoon',
+    kind: 'brand',
+    color: '#185FA5',
+    reelsPerWeek: 7,
+    postsPerWeek: 3,
+    shootEveryDays: 7,
+    status: 'active',
+    categories: ['Internship', 'Meme', 'Poll video', 'Event', 'Career', 'Coding', 'Trend-Led'],
+    hashtags: '#edumoon #students #college #vizag #careers',
+    notes: 'Instagram @edumoon_global. Sruthi owns the weekly format.',
+    template: []
+  };
+  const vikas = {
+    id: uid(),
+    name: 'Vikas Senior',
+    kind: 'brand',
+    color: '#534AB7',
+    reelsPerWeek: 4,
+    postsPerWeek: 0,
+    shootEveryDays: 7,
+    status: 'active',
+    categories: ['Tech', 'Career', 'Internships', 'AI', 'Personal', 'Trend-Led'],
+    hashtags: '#vikassenior #students #careers #ai',
+    notes: 'Face-to-camera reels, collab with EduMoon.',
+    template: []
+  };
+  const slot = (day, type, label, owner, collabWith) => ({ id: uid(), day, type, label, owner, collabWith: collabWith || '' });
+  edumoon.template = [
+    slot(1, 'reel', 'Internship reel', 'Sruthi'),
+    slot(1, 'post', 'Meme', 'Sruthi'),
+    slot(2, 'reel', 'Poll video', 'Student Leads'),
+    slot(4, 'reel', 'Internship reel', 'Sruthi'),
+    slot(4, 'post', 'Meme', 'Sruthi'),
+    slot(6, 'post', 'Event post', 'Sruthi')
+  ];
+  vikas.template = [0, 3, 5, 6].map(d => slot(d, 'reel', 'Vikas face-to-camera reel', 'Vikas', edumoon.id));
+  return [edumoon, vikas];
 }
 
 // ---------- Store ----------
@@ -160,11 +218,47 @@ const Store = {
   },
 
   normalize(data) {
-    data.settings = Object.assign({ shootLeadDays: 5 }, data.settings || {});
+    data.settings = Object.assign({ shootLeadDays: 5, speakingSpeed: 2.5, team: DEFAULT_TEAM.slice(), generated: {} }, data.settings || {});
+    if (!Array.isArray(data.settings.team)) data.settings.team = DEFAULT_TEAM.slice();
+    if (!data.settings.generated || typeof data.settings.generated !== 'object') data.settings.generated = {};
     data.clients = Array.isArray(data.clients) ? data.clients : [];
     data.items = Array.isArray(data.items) ? data.items : [];
     data.ideas = Array.isArray(data.ideas) ? data.ideas : [];
     data.footage = Array.isArray(data.footage) ? data.footage : [];
+    data.trends = Array.isArray(data.trends) ? data.trends : [];
+
+    // Older data: fill in the new fields
+    data.clients.forEach(c => {
+      if (!c.kind) c.kind = 'client';
+      if (!Array.isArray(c.template)) c.template = [];
+      if (typeof c.hashtags !== 'string') c.hashtags = '';
+    });
+    data.items.forEach(i => {
+      if (!Array.isArray(i.collabWith)) i.collabWith = [];
+      if (typeof i.owner !== 'string') i.owner = '';
+      if (typeof i.caption !== 'string') i.caption = '';
+      if (typeof i.hashtags !== 'string') i.hashtags = '';
+      if (typeof i.script !== 'string') i.script = '';
+    });
+    data.ideas.forEach(x => {
+      if (!x.scriptStage) x.scriptStage = x.used ? 'shot' : 'raw';
+      if (typeof x.script !== 'string') x.script = '';
+      if (!Array.isArray(x.collabWith)) x.collabWith = [];
+      if (typeof x.owner !== 'string') x.owner = '';
+    });
+
+    // Add EduMoon and Vikas Senior once (skipped if they already exist by name)
+    if (!data.settings.brandsAdded) {
+      const has = name => data.clients.some(c => c.name.trim().toLowerCase() === name);
+      const [edumoon, vikas] = ownBrands();
+      const existingEdu = data.clients.find(c => c.name.trim().toLowerCase() === 'edumoon');
+      if (!existingEdu) data.clients.push(edumoon);
+      if (!has('vikas senior')) {
+        if (existingEdu) vikas.template.forEach(sl => { sl.collabWith = existingEdu.id; });
+        data.clients.push(vikas);
+      }
+      data.settings.brandsAdded = true;
+    }
     return data;
   },
 
@@ -245,6 +339,65 @@ const Store = {
     this.save();
   },
 
+  // ----- Trends -----
+  saveTrend(t) {
+    const i = this.data.trends.findIndex(x => x.id === t.id);
+    if (i >= 0) this.data.trends[i] = t;
+    else this.data.trends.push(t);
+    this.save();
+  },
+  deleteTrend(id) {
+    this.data.trends = this.data.trends.filter(x => x.id !== id);
+    this.save();
+  },
+
+  // ----- Weekly templates -----
+  // Creates this week's and next week's slots for every account with a template.
+  // Only from today onwards, and each slot only once (deleting a slot won't bring it back).
+  generateTemplateSlots() {
+    const today = todayStr();
+    const gen = this.data.settings.generated;
+    let added = 0;
+    [0, 7].forEach(offset => {
+      const weekStart = addDays(startOfWeek(today), offset);
+      this.data.clients.forEach(c => {
+        if (c.status !== 'active' || !c.template || !c.template.length) return;
+        c.template.forEach(slot => {
+          const date = addDays(weekStart, Number(slot.day) || 0);
+          if (date < today) return;
+          const key = `${c.id}|${slot.id}|${date}`;
+          if (gen[key]) return;
+          gen[key] = today;
+          this.data.items.push({
+            id: uid(),
+            clientId: c.id,
+            type: slot.type || 'reel',
+            title: slot.label || 'Planned content',
+            category: '',
+            stage: 'to_shoot',
+            plannedDate: date,
+            postedDate: '',
+            link: '',
+            notes: '',
+            script: '',
+            caption: '',
+            hashtags: '',
+            owner: slot.owner || '',
+            collabWith: slot.collabWith ? [slot.collabWith] : [],
+            fromTemplate: true,
+            createdAt: new Date().toISOString()
+          });
+          added++;
+        });
+      });
+    });
+    // Forget keys older than 60 days so the list stays small
+    const cutoff = addDays(today, -60);
+    Object.keys(gen).forEach(k => { if (k.split('|')[2] < cutoff) delete gen[k]; });
+    if (added) this.save();
+    return added;
+  },
+
   allCategories() {
     const set = new Set();
     this.data.clients.forEach(c => (c.categories || []).forEach(cat => set.add(cat)));
@@ -254,6 +407,21 @@ const Store = {
 
 // ---------- Calculations ----------
 
+// Does this content piece count for this account? (its own, or a collab)
+function belongsTo(item, clientId) {
+  return item.clientId === clientId || (Array.isArray(item.collabWith) && item.collabWith.includes(clientId));
+}
+
+// Words, estimated seconds and a length rating for a script
+function scriptLength(text) {
+  const words = String(text || '').trim().split(/\s+/).filter(Boolean).length;
+  const speed = Number(Store.data && Store.data.settings.speakingSpeed) || 2.5;
+  const secs = Math.round(words / speed);
+  let level = 'none';
+  if (words) level = secs < 30 ? 'short' : secs <= 40 ? 'good' : 'long';
+  return { words, secs, level };
+}
+
 const Calc = {
   // Posted and planned counts for a client in the week starting weekStart (Monday)
   weekProgress(clientId, weekStart) {
@@ -261,7 +429,7 @@ const Calc = {
     const inWeek = d => d && d >= weekStart && d <= weekEnd;
     const result = { reel: { posted: 0, planned: 0 }, post: { posted: 0, planned: 0 } };
     Store.data.items.forEach(item => {
-      if (item.clientId !== clientId || !result[item.type]) return;
+      if (!belongsTo(item, clientId) || !result[item.type]) return;
       if (item.stage === 'posted' && inWeek(item.postedDate)) result[item.type].posted++;
       else if (item.stage !== 'posted' && inWeek(item.plannedDate)) result[item.type].planned++;
     });
@@ -269,7 +437,7 @@ const Calc = {
   },
 
   counts(clientId) {
-    const items = Store.data.items.filter(x => x.clientId === clientId);
+    const items = Store.data.items.filter(x => belongsTo(x, clientId));
     const by = stage => items.filter(x => x.stage === stage).length;
     return {
       toShoot: by('to_shoot'),
@@ -289,7 +457,7 @@ const Calc = {
     const today = todayStr();
     const lead = Number(Store.data.settings.shootLeadDays) || 0;
     const stock = Store.data.items.filter(x =>
-      x.clientId === client.id && x.type === 'reel' && (x.stage === 'to_edit' || x.stage === 'ready')
+      belongsTo(x, client.id) && x.type === 'reel' && (x.stage === 'to_edit' || x.stage === 'ready')
     ).length;
     const perShoot = Math.max(1, Math.round(perWeek * (Number(client.shootEveryDays) || 7) / 7));
     const daysCovered = Math.floor((stock / perWeek) * 7);
@@ -333,7 +501,7 @@ const Calc = {
       Store.data.items.forEach(item => {
         if (item.stage === 'posted' && item.postedDate && item.postedDate.startsWith(month)) {
           row.total++;
-          row.byClient[item.clientId] = (row.byClient[item.clientId] || 0) + 1;
+          [item.clientId, ...(item.collabWith || [])].forEach(id => { row.byClient[id] = (row.byClient[id] || 0) + 1; });
         }
       });
       return row;
