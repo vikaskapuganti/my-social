@@ -7,7 +7,7 @@
   <meta name="description" content="Track reels and posts for all your social media clients: pipeline, content calendar, footage library, idea bank and posting history.">
   <link rel="stylesheet" href="css/style.css">
 </head>
-<body>
+<body class="booting">
   <header class="topbar">
     <div class="brand">MySocial</div>
     <nav class="nav" id="nav">
@@ -20,6 +20,10 @@
       <button data-view="clients">Clients</button>
       <button data-view="backup">Backup</button>
     </nav>
+    <div class="account">
+      <span id="sync-status" class="sync-status"></span>
+      <button id="logout-btn" class="btn small" data-action="logout" hidden>Log out</button>
+    </div>
   </header>
 
   <main id="view" class="container"></main>
@@ -27,7 +31,10 @@
   <div id="modal-root"></div>
   <div id="toast" class="toast"></div>
 
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="js/config.js"></script>
   <script src="js/store.js"></script>
+  <script src="js/cloud.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

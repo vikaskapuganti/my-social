@@ -18,6 +18,7 @@ MySocial puts every client, every piece of content and every posting date in one
 - **Footage library**: log raw clips you already have, tagged by client and category, so you can make content without a new shoot.
 - **Posting history**: every reel and post that went live, with dates and Instagram links. Add older posts to complete the record.
 - **Clients**: add any number of clients with their own weekly targets, content categories and shoot rhythm. Pause a client without losing history.
+- **Login and sync**: log in with your account and your data is the same on laptop and phone. Each account only ever sees its own data.
 - **Backup**: export and import all data as a JSON file.
 
 ## Screenshots
@@ -29,16 +30,21 @@ MySocial puts every client, every piece of content and every posting date in one
 ## Tech
 
 - Plain HTML, CSS and JavaScript with no frameworks or build step
-- Data saved in the browser with `localStorage`
+- Supabase for login and the database (one JSON row per user, protected by Row Level Security)
+- `localStorage` keeps an offline copy in the browser
 - Hosted on GitHub Pages
+- Works without Supabase too: leave `js/config.js` empty and it runs in local mode
 
 ## Project structure
 
 ```
 index.html        Page layout and navigation
 css/style.css     All styles, including mobile layout
+js/config.js      Supabase project URL and publishable key
 js/store.js       Data layer: saving, loading, date helpers and calculations
-js/app.js         User interface: pages, forms and interactions
+js/cloud.js       Login and syncing with Supabase
+js/app.js         User interface: pages, forms, login and interactions
+supabase-setup.sql  Database table and security rules
 ```
 
 ## Run it locally
@@ -52,15 +58,19 @@ Download the project and open `index.html` in a browser. That's it.
 3. Under "Build and deployment", choose **Deploy from a branch**, select `main` and `/ (root)`, then save.
 4. Your app will be live at `https://<your-username>.github.io/<repo-name>/` in a minute or two.
 
-## Important: your data
+## Set up your own copy with Supabase
 
-Data is saved in the browser you use, on that device only. Anyone can open the app link, but they get their own empty copy and can't see your data.
+1. Create a free project at supabase.com.
+2. Open **SQL Editor**, paste in `supabase-setup.sql` and run it.
+3. Go to **Authentication > Users > Add user**, create your account and tick "Auto confirm user".
+4. Go to **Authentication > Sign In / Providers** and turn off "Allow new users to sign up", so nobody else can create an account.
+5. Copy your project URL and publishable key into `js/config.js`.
 
-Use **Backup > Export backup** regularly. To move to another device, export there and import on the new one.
+The first time you log in, any data already saved in that browser is uploaded to your account.
 
 ## Roadmap
 
-- v2: login and cloud sync, so data works across laptop and phone and interns can share one workspace
+- Shared team workspace for interns
 - Assign content to team members
 - Monthly invoice reminders per client
 - Reach and views tracking per post

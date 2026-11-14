@@ -1,5 +1,6 @@
 // MySocial - data layer
-// Everything is saved in the browser (localStorage). Use the Backup page to export/import.
+// Data lives in Store.data. It is always saved in the browser (localStorage),
+// and when you are logged in it is also synced to Supabase (see cloud.js).
 
 const STORE_KEY = 'mysocial-data-v1';
 
@@ -122,16 +123,40 @@ function seedData() {
 const Store = {
   data: null,
 
-  load() {
-    let data = null;
+  // Data saved in this browser (also used as an offline copy in cloud mode)
+  readLocal() {
     try {
       const raw = localStorage.getItem(STORE_KEY);
-      data = raw ? JSON.parse(raw) : null;
+      return raw ? JSON.parse(raw) : null;
     } catch (e) {
-      data = null;
+      return null;
     }
-    this.data = this.normalize(data || seedData());
+  },
+
+  writeLocal() {
+    try {
+      localStorage.setItem(STORE_KEY, JSON.stringify(this.data));
+      return true;
+    } catch (e) {
+      console.error('Could not save', e);
+      return false;
+    }
+  },
+
+  clearLocal() {
+    try { localStorage.removeItem(STORE_KEY); } catch (e) { /* ignore */ }
+  },
+
+  // Local mode: load from this browser, or start with the sample clients
+  load() {
+    this.data = this.normalize(this.readLocal() || seedData());
     this.save();
+  },
+
+  // Replace data without sending it to the cloud (used when data comes from the cloud)
+  setData(data) {
+    this.data = this.normalize(data);
+    this.writeLocal();
   },
 
   normalize(data) {
@@ -143,14 +168,11 @@ const Store = {
     return data;
   },
 
+  // Every change goes through here: saved in the browser, then synced to the cloud if logged in
   save() {
-    try {
-      localStorage.setItem(STORE_KEY, JSON.stringify(this.data));
-      return true;
-    } catch (e) {
-      console.error('Could not save', e);
-      return false;
-    }
+    const ok = this.writeLocal();
+    if (typeof Cloud !== 'undefined' && Cloud.enabled) Cloud.queueSave();
+    return ok;
   },
 
   replaceAll(data) {

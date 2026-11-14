@@ -64,6 +64,19 @@ a { color: var(--accent); }
 
 .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
 
+/* ---------- Account, sync status and login ---------- */
+.account { margin-left: auto; display: flex; align-items: center; gap: 10px; white-space: nowrap; }
+.sync-status { font-size: 12px; color: var(--muted); }
+.sync-status[data-status="saving"] { color: var(--warning); }
+.sync-status[data-status="error"] { color: var(--danger); }
+.sync-status[data-status="saved"] { color: var(--success); }
+body.logged-out .nav, body.logged-out .account, body.booting .nav, body.booting .account { display: none; }
+.login-wrap { min-height: 70vh; display: flex; align-items: center; justify-content: center; }
+.login-card { width: 100%; max-width: 380px; }
+.login-card h1 { margin-bottom: 4px; }
+.form-error { color: var(--danger); font-size: 13px; margin: 0 0 12px; min-height: 18px; }
+.loading { color: var(--muted); text-align: center; padding: 80px 0; }
+
 .page-head {
   display: flex;
   justify-content: space-between;
@@ -293,5 +306,6 @@ tr.clickable:hover td { background: #faf9f6; }
   .board { grid-template-columns: repeat(4, 240px); }
   .cal .day { min-height: 70px; padding: 4px; }
   .chip .label { display: none; }
+  .account { margin-left: 0; justify-content: space-between; }
   .hide-mobile { display: none; }
 }

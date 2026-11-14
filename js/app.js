@@ -788,7 +788,7 @@ function renderBackup() {
     <div class="page-head">
       <div>
         <h1>Backup and settings</h1>
-        <p class="sub">Your data is saved in this browser only. Export a backup regularly.</p>
+        <p class="sub">${Cloud.enabled ? 'Your data is synced to your account. An extra backup file is still a good idea once in a while.' : 'Your data is saved in this browser only. Export a backup regularly.'}</p>
       </div>
     </div>
     <div class="two-col">
@@ -799,7 +799,7 @@ function renderBackup() {
           <button class="btn primary" data-action="export">Export backup</button>
           <label class="btn" style="margin:0">Import backup<input type="file" id="import-file" accept=".json,application/json" hidden></label>
         </div>
-        <p class="hint">Importing replaces everything currently in the app. To move to another laptop or browser, export here and import there.</p>
+        <p class="hint">Importing replaces everything currently in the app${Cloud.enabled ? ' and in your account' : ''}.${Cloud.enabled ? '' : ' To move to another laptop or browser, export here and import there.'}</p>
       </div>
       <div class="card">
         <h2>Settings</h2>
@@ -959,7 +959,7 @@ document.addEventListener('click', e => {
   if (e.target.closest('[data-stop]')) { e.stopPropagation(); return; }
 
   const navBtn = e.target.closest('#nav button');
-  if (navBtn) { switchView(navBtn.dataset.view); return; }
+  if (navBtn) { if (Store.data) switchView(navBtn.dataset.view); return; }
 
   const el = e.target.closest('[data-action]');
   if (!el) return;
@@ -1067,6 +1067,9 @@ document.addEventListener('click', e => {
     case 'export':
       exportBackup();
       break;
+    case 'logout':
+      logout();
+      break;
     case 'reset':
       if (confirm('Delete all data and start over? Export a backup first if you want to keep it.')) {
         Store.reset();
@@ -1117,9 +1120,123 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && modalRoot.innerHTML) closeModal();
 });
 
-window.addEventListener('hashchange', () => switchView(location.hash.slice(1)));
+window.addEventListener('hashchange', () => { if (Store.data) switchView(location.hash.slice(1)); });
 
-// ---------- Start ----------
+// ---------- Login and start ----------
 
-Store.load();
-switchView(location.hash.slice(1) || 'dashboard');
+function renderLogin(message) {
+  document.body.classList.add('logged-out');
+  document.body.classList.remove('booting');
+  closeModal();
+  viewEl.innerHTML = `
+    <div class="login-wrap">
+      <form id="login-form" class="card login-card">
+        <h1>MySocial</h1>
+        <p class="hint" style="margin-bottom:16px">Log in to see your clients and content.</p>
+        <div class="field">
+          <label>Email</label>
+          <input type="email" name="email" autocomplete="username" required>
+        </div>
+        <div class="field">
+          <label>Password</label>
+          <input type="password" name="password" autocomplete="current-password" required>
+        </div>
+        <p class="form-error" id="login-error">${escapeHtml(message || '')}</p>
+        <button class="btn primary" type="submit" style="width:100%;justify-content:center">Log in</button>
+      </form>
+    </div>`;
+  const form = document.getElementById('login-form');
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const btn = form.querySelector('button[type="submit"]');
+    const errEl = document.getElementById('login-error');
+    btn.disabled = true;
+    btn.textContent = 'Logging in...';
+    errEl.textContent = '';
+    try {
+      await Cloud.signIn(form.elements.email.value.trim(), form.elements.password.value);
+      await startCloud();
+    } catch (err) {
+      errEl.textContent = err && err.message ? err.message : 'Could not log in';
+      btn.disabled = false;
+      btn.textContent = 'Log in';
+    }
+  });
+}
+
+// Load your data from the cloud. The first time, whatever is already in this
+// browser (your v1 data) is uploaded so nothing is lost.
+async function startCloud() {
+  document.body.classList.remove('logged-out');
+  viewEl.innerHTML = '<div class="loading">Loading your data...</div>';
+  try {
+    const remote = await Cloud.fetch();
+    if (remote) {
+      Store.setData(remote.data);
+      Cloud.lastSyncedAt = remote.updated_at;
+      Cloud.setStatus('saved');
+    } else {
+      Store.setData(Store.readLocal() || seedData());
+      Cloud.pending = true;
+      await Cloud.push();
+      toast('Your data is now saved to your account');
+    }
+  } catch (err) {
+    console.error(err);
+    const local = Store.readLocal();
+    if (!local) {
+      renderLogin('Could not reach the server. Check your internet and try again.');
+      return;
+    }
+    Store.setData(local);
+    Cloud.setStatus('error');
+    toast('Offline - showing the copy saved on this device');
+  }
+  document.getElementById('logout-btn').hidden = false;
+  startApp();
+}
+
+function startApp() {
+  document.body.classList.remove('booting', 'logged-out');
+  switchView(location.hash.slice(1) || 'dashboard');
+}
+
+async function logout() {
+  if (Cloud.pending && !confirm('Some changes have not synced yet. Log out anyway?')) return;
+  await Cloud.signOut();
+  Store.clearLocal(); // don't leave your data on a shared device
+  Store.data = null;
+  document.getElementById('logout-btn').hidden = true;
+  renderLogin();
+}
+
+async function boot() {
+  if (!Cloud.init()) {
+    // No Supabase settings: local mode, data stays in this browser
+    Store.load();
+    Cloud.setStatus('local');
+    startApp();
+    return;
+  }
+  viewEl.innerHTML = '<div class="loading">Loading...</div>';
+  try {
+    const user = await Cloud.getUser();
+    if (user) await startCloud();
+    else renderLogin();
+  } catch (err) {
+    renderLogin('Could not reach the server. Check your internet and try again.');
+  }
+}
+
+// Coming back to the tab: pick up changes made on your phone or another device
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState !== 'visible' || !Cloud.enabled || !Cloud.user || !Store.data) return;
+  if (modalRoot.innerHTML) return; // don't refresh while you're editing
+  if (await Cloud.refreshIfChanged()) render();
+});
+
+// Try to send unsynced changes before the page closes
+window.addEventListener('pagehide', () => { if (Cloud.enabled) Cloud.flush(); });
+window.addEventListener('online', () => { if (Cloud.enabled && Cloud.pending) Cloud.push(); });
+
+boot();
