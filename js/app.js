@@ -14,7 +14,9 @@ const state = {
   footShowUsed: false,
   histClient: '',
   histType: '',
-  histMonth: ''
+  histMonth: '',
+  readyClient: '',
+  readyLastClient: ''
 };
 
 const viewEl = document.getElementById('view');
@@ -284,7 +286,7 @@ function renderDashboard() {
     return `
       <div class="card client-card" style="--client:${c.color}">
         <div class="head">
-          <h3 style="margin:0">${escapeHtml(c.name)}</h3>
+          <h3 style="margin:0"><a href="#client/${c.id}" class="client-link">${escapeHtml(c.name)}</a></h3>
           <span class="hint">${c.reelsPerWeek} reels + ${c.postsPerWeek} posts / week</span>
         </div>
         ${progressLine('Reels this week', prog.reel, c.reelsPerWeek)}
@@ -303,6 +305,29 @@ function renderDashboard() {
   const upcoming = Calc.upcoming(7);
   const months = Calc.postedByMonth(3);
 
+  // Edited pieces waiting to go live, in one place
+  const ready = Store.data.items
+    .filter(x => x.stage === 'ready' && (!state.readyClient || x.clientId === state.readyClient))
+    .sort((a, b) => (a.plannedDate || '9999').localeCompare(b.plannedDate || '9999'));
+  const readyRows = ready.map(item => {
+    const late = item.plannedDate && item.plannedDate < today;
+    return `
+      <div class="list-item" style="--client:${clientColor(item.clientId)}">
+        <div class="main clickable" data-action="edit-item" data-id="${item.id}" style="cursor:pointer">
+          <div class="title">${escapeHtml(item.title || 'Untitled')}</div>
+          <div class="meta">
+            ${typeBadge(item.type)}
+            <span>${escapeHtml(clientName(item.clientId))}</span>
+            ${item.category ? `<span>${escapeHtml(item.category)}</span>` : ''}
+            <span>${item.plannedDate ? 'Post on ' + shortDate(item.plannedDate) : 'No posting date yet'}</span>
+            ${late ? '<span class="badge overdue">Overdue</span>' : ''}
+          </div>
+        </div>
+        <button class="btn small primary" data-action="mark-posted" data-id="${item.id}">Mark posted</button>
+      </div>`;
+  }).join('');
+  const readyClients = Store.activeClients();
+
   return `
     <div class="page-head">
       <div>
@@ -314,6 +339,21 @@ function renderDashboard() {
 
     ${active.length ? `<div class="cards">${cards}</div>` : '<div class="empty" style="margin-bottom:24px">No active clients. Add one on the Clients page.</div>'}
     ${paused.length ? `<p class="hint" style="margin:-12px 0 24px">Paused: ${paused.map(c => escapeHtml(c.name)).join(', ')}</p>` : ''}
+
+    <div class="card ready-box">
+      <div class="ready-head">
+        <h2 style="margin:0">Edited, ready to post <span class="badge">${ready.length}</span></h2>
+        <select data-change="readyClient" style="width:auto">${clientOptions(state.readyClient, true)}</select>
+      </div>
+      <form id="ready-form" class="ready-form">
+        <select name="clientId" required>${clientOptions(state.readyClient || state.readyLastClient || (readyClients[0] || {}).id, false)}</select>
+        <select name="type"><option value="reel">Reel</option><option value="post">Post</option></select>
+        <input name="title" placeholder="What did you edit? e.g. Ragi laddu recipe reel" required>
+        <input type="date" name="plannedDate" title="When to post">
+        <button class="btn primary" type="submit">Add</button>
+      </form>
+      <div class="list">${readyRows || '<div class="empty">Nothing edited and waiting. Add a piece above when you finish editing.</div>'}</div>
+    </div>
 
     <div class="two-col">
       <div>
@@ -661,7 +701,7 @@ function renderClients() {
     return `
       <div class="card client-card" style="--client:${c.color}">
         <div class="head">
-          <h3 style="margin:0">${escapeHtml(c.name)}</h3>
+          <h3 style="margin:0"><a href="#client/${c.id}" class="client-link">${escapeHtml(c.name)}</a></h3>
           <span class="badge ${c.status}">${c.status === 'active' ? 'Active' : 'Paused'}</span>
         </div>
         <p class="hint">${c.reelsPerWeek} reels + ${c.postsPerWeek} posts per week. Shoot every ${c.shootEveryDays} days.</p>
@@ -669,6 +709,7 @@ function renderClients() {
         <p class="hint">${(c.categories || []).length} categories: ${escapeHtml((c.categories || []).slice(0, 4).join(', '))}${(c.categories || []).length > 4 ? '...' : ''}</p>
         ${c.notes ? `<p class="hint">${escapeHtml(c.notes)}</p>` : ''}
         <div class="btn-row" style="margin-top:12px">
+          <a class="btn small primary" href="#client/${c.id}">View</a>
           <button class="btn small" data-action="edit-client" data-id="${c.id}">Edit</button>
           <button class="btn small" data-action="toggle-client" data-id="${c.id}">${c.status === 'active' ? 'Pause' : 'Resume'}</button>
         </div>
@@ -818,6 +859,121 @@ function renderBackup() {
     </div>`;
 }
 
+
+// ---------- Single client page ----------
+
+function renderClientDetail() {
+  const c = Store.client(state.clientId);
+  if (!c) return renderClients();
+  const today = todayStr();
+  const items = Store.data.items.filter(x => x.clientId === c.id);
+  const posted = items.filter(x => x.stage === 'posted').sort((a, b) => (b.postedDate || '').localeCompare(a.postedDate || ''));
+  const reels = posted.filter(x => x.type === 'reel').length;
+  const posts = posted.length - reels;
+  const n = Calc.counts(c.id);
+  const alert = Calc.shootAlert(c);
+  const thisWeek = Calc.weekProgress(c.id, startOfWeek(today));
+  const month = today.slice(0, 7);
+  const monthPosted = posted.filter(x => (x.postedDate || '').startsWith(month));
+  const firstDate = posted.length ? posted[posted.length - 1].postedDate : '';
+
+  // Last 8 weeks, newest first
+  const weeks = [];
+  for (let i = 0; i < 8; i++) {
+    const start = addDays(startOfWeek(today), -7 * i);
+    const p = Calc.weekProgress(c.id, start);
+    weeks.push({ start, reels: p.reel.posted, posts: p.post.posted, before: !firstDate || addDays(start, 6) < firstDate });
+  }
+  const cell = (got, target) => {
+    const t = Number(target) || 0;
+    const cls = !t ? '' : got >= t ? 'met' : got > 0 ? 'part' : 'miss';
+    return `<td><span class="score ${cls}">${got}/${t}</span></td>`;
+  };
+
+  // Month by month since the first post
+  const months = {};
+  posted.forEach(x => {
+    const m = (x.postedDate || '').slice(0, 7);
+    if (!m) return;
+    months[m] = months[m] || { reel: 0, post: 0 };
+    months[m][x.type]++;
+  });
+  const monthRows = Object.keys(months).sort().reverse().map(m =>
+    `<tr><td>${monthLabel(m)}</td><td>${months[m].reel}</td><td>${months[m].post}</td><td><strong>${months[m].reel + months[m].post}</strong></td></tr>`).join('');
+
+  // Category mix of posted content
+  const cats = {};
+  posted.forEach(x => { const k = x.category || 'No category'; cats[k] = (cats[k] || 0) + 1; });
+  const catMax = Math.max(1, ...Object.values(cats));
+  const catRows = Object.entries(cats).sort((a, b) => b[1] - a[1]).map(([k, v]) => `
+    <div class="hbar"><span class="hbar-label">${escapeHtml(k)}</span>
+      <span class="hbar-track"><span class="hbar-fill" style="width:${(v / catMax) * 100}%;background:${c.color}"></span></span>
+      <span class="hbar-num">${v}</span></div>`).join('');
+
+  const inProgress = items.filter(x => x.stage !== 'posted')
+    .sort((a, b) => (a.plannedDate || '9999').localeCompare(b.plannedDate || '9999'));
+
+  const tile = (num, label) => `<div class="stat"><div class="num">${num}</div><div class="lbl">${label}</div></div>`;
+
+  return `
+    <div class="page-head">
+      <div>
+        <p class="hint" style="margin:0 0 4px"><a href="#clients">Clients</a> / ${escapeHtml(c.name)}</p>
+        <h1 style="display:flex;align-items:center;gap:10px"><span class="dot" style="--client:${c.color};width:14px;height:14px"></span>${escapeHtml(c.name)}
+          <span class="badge ${c.status}">${c.status === 'active' ? 'Active' : 'Paused'}</span></h1>
+        <p class="sub">Target ${c.reelsPerWeek} reels + ${c.postsPerWeek} posts a week${firstDate ? ` · Posting since ${prettyDate(firstDate)}` : ''}</p>
+      </div>
+      <div class="btn-row">
+        <button class="btn" data-action="edit-client" data-id="${c.id}">Edit client</button>
+        <button class="btn primary" data-action="new-item-client" data-id="${c.id}">Add content</button>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <div class="stat-row stat-row-wide">
+        ${tile(posted.length, 'Total posted')}
+        ${tile(reels, 'Reels posted')}
+        ${tile(posts, 'Posts posted')}
+        ${tile(monthPosted.length, 'Posted this month')}
+      </div>
+      <div class="stat-row stat-row-wide">
+        ${tile(`${thisWeek.reel.posted}/${c.reelsPerWeek}`, 'Reels this week')}
+        ${tile(`${thisWeek.post.posted}/${c.postsPerWeek}`, 'Posts this week')}
+        ${tile(n.pending, 'Pending (shoot + edit)')}
+        ${tile(n.ready, 'Ready to post')}
+      </div>
+      ${alert && c.status === 'active' ? `<div class="alert ${alert.level}">${escapeHtml(alert.text)}</div>` : ''}
+    </div>
+
+    <div class="two-col" style="margin-bottom:24px">
+      <div>
+        <h2>Last 8 weeks</h2>
+        <table>
+          <thead><tr><th>Week starting</th><th>Reels</th><th>Posts</th></tr></thead>
+          <tbody>${weeks.map(w => `<tr><td>${shortDate(w.start)}</td>${w.before ? '<td class="hint">-</td><td class="hint">-</td>' : cell(w.reels, c.reelsPerWeek) + cell(w.posts, c.postsPerWeek)}</tr>`).join('')}</tbody>
+        </table>
+        <p class="hint" style="margin-top:6px">Green = target met, amber = partly, red = nothing posted.</p>
+      </div>
+      <div>
+        <h2>Month by month</h2>
+        ${monthRows ? `<table><thead><tr><th>Month</th><th>Reels</th><th>Posts</th><th>Total</th></tr></thead><tbody>${monthRows}</tbody></table>` : '<div class="empty">Nothing posted yet.</div>'}
+        <h2 style="margin-top:24px">Content mix</h2>
+        ${catRows ? `<div class="card">${catRows}</div>` : '<div class="empty">No categories yet.</div>'}
+      </div>
+    </div>
+
+    <div class="two-col">
+      <div>
+        <h2>In progress <span class="badge">${inProgress.length}</span></h2>
+        <div class="list">${inProgress.length ? inProgress.map(i => itemRow(i)).join('') : '<div class="empty">Nothing in progress.</div>'}</div>
+      </div>
+      <div>
+        <h2>Posted <span class="badge">${posted.length}</span></h2>
+        <div class="list">${posted.length ? posted.map(i => itemRow(i, i.link ? `<a href="${escapeHtml(i.link)}" target="_blank" rel="noopener" data-stop>Open on Instagram</a>` : '')).join('') : '<div class="empty">Nothing posted yet.</div>'}</div>
+      </div>
+    </div>`;
+}
+
 // ---------- Rendering and navigation ----------
 
 const PAGES = {
@@ -828,18 +984,26 @@ const PAGES = {
   footage: renderFootage,
   history: renderHistory,
   clients: renderClients,
+  client: renderClientDetail,
   backup: renderBackup
 };
 
 function render() {
   viewEl.innerHTML = (PAGES[state.view] || renderDashboard)();
-  document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('active', b.dataset.view === state.view));
+  document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('active', b.dataset.view === (state.view === 'client' ? 'clients' : state.view)));
   bindPageForms();
 }
 
 function switchView(view) {
+  view = view || 'dashboard';
+  if (view.startsWith('client/')) {
+    state.clientId = view.slice(7);
+    view = 'client';
+  }
+  if (view === 'client' && !Store.client(state.clientId)) view = 'clients';
   state.view = PAGES[view] ? view : 'dashboard';
-  if (location.hash !== '#' + state.view) history.replaceState(null, '', '#' + state.view);
+  const hash = state.view === 'client' ? '#client/' + state.clientId : '#' + state.view;
+  if (location.hash !== hash) history.replaceState(null, '', hash);
   window.scrollTo(0, 0);
   render();
 }
@@ -864,6 +1028,30 @@ function bindPageForms() {
         createdAt: new Date().toISOString()
       });
       toast('Idea added');
+      render();
+    });
+  }
+
+  const readyForm = document.getElementById('ready-form');
+  if (readyForm) {
+    readyForm.addEventListener('submit', e => {
+      e.preventDefault();
+      const f = readyForm.elements;
+      state.readyLastClient = f.clientId.value;
+      Store.saveItem({
+        id: uid(),
+        clientId: f.clientId.value,
+        type: f.type.value,
+        title: f.title.value.trim(),
+        category: '',
+        stage: 'ready',
+        plannedDate: f.plannedDate.value,
+        postedDate: '',
+        link: '',
+        notes: '',
+        createdAt: new Date().toISOString()
+      });
+      toast('Added to ready to post');
       render();
     });
   }
@@ -1047,6 +1235,12 @@ document.addEventListener('click', e => {
     case 'hist-clear-month':
       state.histMonth = '';
       render();
+      break;
+    case 'mark-posted':
+      moveItem(id, 'posted');
+      break;
+    case 'new-item-client':
+      openItemForm({ clientId: id });
       break;
     case 'new-client':
       openClientForm(null);
