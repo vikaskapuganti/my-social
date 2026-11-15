@@ -20,6 +20,15 @@ const SCRIPT_STAGES = [
   { id: 'shot', label: 'Shot' }
 ];
 
+const PLATFORMS = [
+  { id: 'ig', label: 'Instagram', short: 'IG' },
+  { id: 'yt', label: 'YouTube', short: 'YT' },
+  { id: 'li', label: 'LinkedIn', short: 'in' },
+  { id: 'x', label: 'X', short: 'X' },
+  { id: 'fb', label: 'Facebook', short: 'FB' },
+  { id: 'th', label: 'Threads', short: 'Th' }
+];
+
 const DEFAULT_TEAM = ['Vikas', 'Sruthi', 'Hardik', 'Spandana', 'Aparna', 'Student Leads'];
 const DEFAULT_GENRES = ['Nutrition/Food', 'Cafe', 'Education', 'Personal', 'Tech', 'Comedy'];
 
@@ -232,6 +241,7 @@ const Store = {
       if (!c.kind) c.kind = 'client';
       if (!Array.isArray(c.template)) c.template = [];
       if (typeof c.hashtags !== 'string') c.hashtags = '';
+      if (!Array.isArray(c.platforms)) c.platforms = ['ig'];
     });
     data.items.forEach(i => {
       if (!Array.isArray(i.collabWith)) i.collabWith = [];
@@ -239,7 +249,28 @@ const Store = {
       if (typeof i.caption !== 'string') i.caption = '';
       if (typeof i.hashtags !== 'string') i.hashtags = '';
       if (typeof i.script !== 'string') i.script = '';
+      if (!i.crossPost || typeof i.crossPost !== 'object') i.crossPost = {};
+      if (!i.platformLinks || typeof i.platformLinks !== 'object') i.platformLinks = {};
     });
+
+    // First time with platforms: set each account's platforms and tick Instagram on everything already posted
+    if (!data.settings.platformsSet) {
+      const defaults = { 'edumoon': ['ig', 'yt', 'li'], 'vikas senior': ['ig', 'yt', 'li', 'x'], 'nutraahi': ['ig', 'yt'], 'kerbside cafe': ['ig', 'yt'] };
+      data.clients.forEach(c => {
+        const d = defaults[c.name.trim().toLowerCase()];
+        if (d) c.platforms = d.slice();
+      });
+      data.items.forEach(i => {
+        if (i.stage !== 'posted') return;
+        [i.clientId, ...(i.collabWith || [])].forEach(acct => {
+          const c = data.clients.find(x => x.id === acct);
+          if (c && c.platforms.includes('ig')) {
+            i.crossPost[acct] = Object.assign({}, i.crossPost[acct], { ig: true });
+          }
+        });
+      });
+      data.settings.platformsSet = true;
+    }
     data.ideas.forEach(x => {
       if (!x.scriptStage) x.scriptStage = x.used ? 'shot' : 'raw';
       if (typeof x.script !== 'string') x.script = '';
@@ -443,6 +474,23 @@ function scriptLength(text) {
   let level = 'none';
   if (words) level = secs < 30 ? 'short' : secs <= 40 ? 'good' : 'long';
   return { words, secs, level };
+}
+
+// ----- Cross-posting -----
+function accountsOf(item) {
+  return [item.clientId, ...(item.collabWith || [])].filter(id => Store.client(id));
+}
+function isPostedOn(item, acct, pf) {
+  return !!(item.crossPost && item.crossPost[acct] && item.crossPost[acct][pf]);
+}
+// Instagram link means it's on Instagram for the main account and its collabs
+function autoTickInstagram(item) {
+  if (item.stage !== 'posted' || !/instagram\.com/i.test(item.link || '')) return;
+  item.crossPost = item.crossPost || {};
+  accountsOf(item).forEach(acct => {
+    const c = Store.client(acct);
+    if (c && (c.platforms || []).includes('ig')) item.crossPost[acct] = Object.assign({}, item.crossPost[acct], { ig: true });
+  });
 }
 
 // Deadline on a script: post a few days before it, shoot the day before that

@@ -423,6 +423,43 @@ tr.clickable:hover td { background: #faf9f6; }
   .wp-grid { grid-template-columns: 110px repeat(7, 120px); }
 }
 
+
+/* ---------- v6: platforms ---------- */
+.pf-wrap { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.pf-row { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.pf { border: 1px solid var(--border); background: var(--surface); color: var(--muted); font: inherit; font-size: 11px; font-weight: 600; border-radius: 999px; padding: 2px 9px; cursor: pointer; line-height: 1.5; }
+.pf:hover { border-color: #c9c7bd; color: var(--text); }
+.pf.on { background: var(--success-soft); color: var(--success); border-color: #97c459; }
+.pf-form-row { margin-bottom: 6px; }
+.pf-form-row .pf { font-size: 13px; padding: 4px 12px; }
+.pf-acct { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; min-width: 110px; }
+.pf-links { margin-top: 6px; font-size: 13px; }
+.pf-links summary { cursor: pointer; color: var(--accent); }
+.pf-link-row { display: grid; grid-template-columns: 150px 1fr; gap: 8px; align-items: center; margin-top: 6px; font-size: 13px; }
+.pf-stats { display: flex; gap: 8px; flex-wrap: wrap; }
+.pf-stat { background: var(--surface-2); border-radius: 8px; padding: 4px 10px; font-size: 13px; }
+.pf-stat.full { background: var(--success-soft); color: var(--success); }
+td .pf-wrap { margin-top: 0; }
+
+
+/* ---------- v6.1: phone fit + collab labels ---------- */
+body { overflow-x: clip; }
+.container, .two-col > *, .cards > *, .td-grid > *, .today, .card { min-width: 0; }
+.table-wrap { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; border-radius: var(--radius); }
+.table-wrap table { min-width: 100%; }
+.short { display: none; }
+.pf-name { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; min-width: 92px; color: var(--text); }
+@media (max-width: 800px) {
+  .full { display: none; }
+  .short { display: inline; }
+  .pf-name { min-width: 62px; }
+  th, td { padding: 8px 10px; white-space: nowrap; }
+  .page-head > div:first-child { min-width: 0; }
+  .pf-row { flex-wrap: nowrap; }
+  .hist-title { max-width: 100px; overflow: hidden; text-overflow: ellipsis; }
+  td { vertical-align: middle; }
+}
+
 /* ---------- Responsive ---------- */
 @media (max-width: 800px) {
   .topbar { flex-direction: column; align-items: stretch; gap: 8px; padding: 10px 12px; }

@@ -24,7 +24,8 @@ const state = {
   trendGenre: '',
   planWeek: 0,
   calMode: 'month',
-  calWeek: 0
+  calWeek: 0,
+  pfMissing: ''
 };
 
 const viewEl = document.getElementById('view');
@@ -149,6 +150,23 @@ function fallbackCopy(text, done) {
   ta.remove();
 }
 
+// Small IG / YT / in / X buttons for one piece. One row per account (main + collabs).
+function platformRows(item) {
+  if (item.stage !== 'posted') return '';
+  const accts = accountsOf(item).filter(a => (Store.client(a).platforms || []).length);
+  if (!accts.length) return '';
+  const many = accts.length > 1;
+  return `<div class="pf-wrap">${accts.map(acct => {
+    const c = Store.client(acct);
+    const btns = PLATFORMS.filter(p => c.platforms.includes(p.id)).map(p => {
+      const on = isPostedOn(item, acct, p.id);
+      const link = item.platformLinks && item.platformLinks[acct] && item.platformLinks[acct][p.id];
+      return `<button type="button" class="pf ${on ? 'on' : ''}" data-action="toggle-platform" data-id="${item.id}" data-acct="${acct}" data-pf="${p.id}" title="${p.label}${on ? ': posted' : ': not yet'}${link ? ' (has link)' : ''}">${on ? '&#10003; ' : ''}${p.short}</button>`;
+    }).join('');
+    return `<span class="pf-row">${many ? `<span class="pf-name"><span class="dot" style="--client:${c.color}"></span><span class="full">${escapeHtml(c.name)}</span><span class="short">${escapeHtml(c.name.split(' ')[0])}</span></span>` : ''}${btns}</span>`;
+  }).join('')}</div>`;
+}
+
 function itemRow(item, extraMeta) {
   const today = todayStr();
   const overdue = item.stage !== 'posted' && item.plannedDate && item.plannedDate < today;
@@ -169,6 +187,7 @@ function itemRow(item, extraMeta) {
           ${overdue ? '<span class="badge overdue">Overdue</span>' : ''}
           ${extraMeta || ''}
         </div>
+        ${platformRows(item)}
       </div>
       <span class="badge">${stageLabel(item.stage)}</span>
     </div>`;
@@ -266,6 +285,11 @@ function openItemForm(item) {
         <label>Instagram link</label>
         <input name="link" value="${escapeHtml(data.link)}" placeholder="https://www.instagram.com/reel/...">
       </div>
+      <div class="field posted-only">
+        <label>Posted on platforms <span class="hint">tap to tick</span></label>
+        <div id="pf-form"></div>
+        <details class="pf-links"><summary>Add links for other platforms (optional)</summary><div id="pf-link-fields"></div></details>
+      </div>
       <div class="grid-2">
         <div class="field">
           <label>Who's doing it</label>
@@ -308,6 +332,45 @@ function openItemForm(item) {
   openModal(isNew ? 'New content' : 'Edit content', html, modal => {
     const form = modal.querySelector('#item-form');
     const stageSel = form.elements.stage;
+    // Platform ticks inside the form (kept here until Save)
+    const cp = JSON.parse(JSON.stringify(data.crossPost || {}));
+    const pl = JSON.parse(JSON.stringify(data.platformLinks || {}));
+    const formAccounts = () => [form.elements.clientId.value, ...[...form.querySelectorAll('input[name="collabWith"]:checked')].map(x => x.value)]
+      .filter((id, i, a) => id && a.indexOf(id) === i && Store.client(id));
+    const drawPlatforms = () => {
+      const accts = formAccounts();
+      const many = accts.length > 1;
+      modal.querySelector('#pf-form').innerHTML = accts.map(acct => {
+        const c = Store.client(acct);
+        const list = PLATFORMS.filter(p => (c.platforms || []).includes(p.id));
+        if (!list.length) return `<p class="hint" style="margin:0">${escapeHtml(c.name)}: no platforms set (Edit the account to add some)</p>`;
+        return `<div class="pf-row pf-form-row">${many ? `<span class="pf-acct"><span class="dot" style="--client:${c.color}"></span>${escapeHtml(c.name)}</span>` : ''}
+          ${list.map(p => `<button type="button" class="pf ${cp[acct] && cp[acct][p.id] ? 'on' : ''}" data-pf-acct="${acct}" data-pf-id="${p.id}">${cp[acct] && cp[acct][p.id] ? '&#10003; ' : ''}${p.label}</button>`).join('')}</div>`;
+      }).join('');
+      modal.querySelector('#pf-link-fields').innerHTML = accts.map(acct => {
+        const c = Store.client(acct);
+        return PLATFORMS.filter(p => p.id !== 'ig' && (c.platforms || []).includes(p.id)).map(p =>
+          `<div class="pf-link-row"><span>${many ? escapeHtml(c.name) + ' · ' : ''}${p.label}</span><input data-pfl-acct="${acct}" data-pfl-id="${p.id}" value="${escapeHtml((pl[acct] || {})[p.id] || '')}" placeholder="Link"></div>`).join('');
+      }).join('') || '<p class="hint">No other platforms for this account.</p>';
+    };
+    modal.querySelector('#pf-form').addEventListener('click', e => {
+      const b = e.target.closest('[data-pf-acct]');
+      if (!b) return;
+      const a = b.dataset.pfAcct, id = b.dataset.pfId;
+      cp[a] = Object.assign({}, cp[a]);
+      cp[a][id] = !cp[a][id];
+      drawPlatforms();
+    });
+    form.addEventListener('change', e => { if (e.target.name === 'collabWith') drawPlatforms(); });
+    form.elements.link.addEventListener('input', () => {
+      if (!/instagram\.com/i.test(form.elements.link.value)) return;
+      formAccounts().forEach(a => {
+        if ((Store.client(a).platforms || []).includes('ig')) cp[a] = Object.assign({}, cp[a], { ig: true });
+      });
+      drawPlatforms();
+    });
+    drawPlatforms();
+
     const togglePosted = () => {
       const posted = stageSel.value === 'posted';
       form.querySelectorAll('.posted-only').forEach(el => { el.style.display = posted ? '' : 'none'; });
@@ -325,6 +388,7 @@ function openItemForm(item) {
       form.elements.category.innerHTML = categoryOptions(form.elements.clientId.value, '');
       const keep = checkedCollabs().filter(id => id !== form.elements.clientId.value);
       modal.querySelector('#collab-box').innerHTML = collabChecks(keep, form.elements.clientId.value);
+      drawPlatforms();
     });
     bindLengthChip(form.elements.script, modal.querySelector('#item-len'));
     modal.querySelector('[data-action="use-saved-hashtags"]').addEventListener('click', () => {
@@ -356,8 +420,19 @@ function openItemForm(item) {
         script: f.script.value.trim(),
         caption: f.caption.value.trim(),
         hashtags: f.hashtags.value.trim(),
+        crossPost: cp,
+        platformLinks: (() => {
+          const out = {};
+          modal.querySelectorAll('[data-pfl-acct]').forEach(inp => {
+            const v = inp.value.trim();
+            if (!v) return;
+            out[inp.dataset.pflAcct] = Object.assign({}, out[inp.dataset.pflAcct], { [inp.dataset.pflId]: v });
+          });
+          return out;
+        })(),
         createdAt: data.createdAt || new Date().toISOString()
       });
+      autoTickInstagram(saved);
       if (saved.stage === 'posted' && !saved.postedDate) {
         toast('Add the date it was posted');
         return;
@@ -459,12 +534,12 @@ function renderDashboard() {
       </div>
       <div>
         <h2>Posted per month</h2>
-        <table>
-          <thead><tr><th>Month</th>${Store.data.clients.map(c => `<th>${escapeHtml(c.name)}</th>`).join('')}<th>Total</th></tr></thead>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Month</th>${Store.data.clients.map(c => `<th><span class="full">${escapeHtml(c.name)}</span><span class="short">${escapeHtml(c.name.split(' ')[0])}</span></th>`).join('')}<th>Total</th></tr></thead>
           <tbody>
             ${months.map(m => `<tr><td>${monthLabel(m.month).replace(/ \d{4}$/, '')}</td>${Store.data.clients.map(c => `<td>${m.byClient[c.id] || 0}</td>`).join('')}<td><strong>${m.total}</strong></td></tr>`).join('')}
           </tbody>
-        </table>
+        </table></div>
       </div>
     </div>
 
@@ -1270,11 +1345,12 @@ function renderHistory() {
 
   const rows = posted.map(item => `
     <tr class="clickable" data-action="edit-item" data-id="${item.id}">
-      <td>${prettyDate(item.postedDate)}</td>
-      <td><span class="dot" style="--client:${clientColor(item.clientId)}"></span> ${escapeHtml(clientName(item.clientId))}</td>
+      <td>${prettyDate(item.postedDate).replace(/ \d{4}$/, '')}</td>
+      <td class="hide-mobile"><span class="dot" style="--client:${clientColor(item.clientId)}"></span> ${escapeHtml(clientName(item.clientId))}</td>
       <td>${typeBadge(item.type)}</td>
-      <td>${escapeHtml(item.title)}</td>
+      <td class="hist-title">${escapeHtml(item.title)}</td>
       <td class="hide-mobile">${escapeHtml(item.category || '')}</td>
+      <td>${platformRows(item)}</td>
       <td class="hide-mobile">${item.link ? `<a href="${escapeHtml(item.link)}" target="_blank" rel="noopener" data-stop>Open</a>` : ''}</td>
     </tr>`).join('');
 
@@ -1298,10 +1374,10 @@ function renderHistory() {
     </div>
     <p class="hint">${posted.length} total: ${reels} reels, ${posts} posts</p>
     ${posted.length ? `
-      <table>
-        <thead><tr><th>Date</th><th>Client</th><th>Type</th><th>Title</th><th class="hide-mobile">Category</th><th class="hide-mobile">Link</th></tr></thead>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Date</th><th class="hide-mobile">Client</th><th>Type</th><th>Title</th><th class="hide-mobile">Category</th><th>Platforms</th><th class="hide-mobile">Link</th></tr></thead>
         <tbody>${rows}</tbody>
-      </table>` : '<div class="empty">Nothing posted yet for this filter.</div>'}`;
+      </table></div>` : '<div class="empty">Nothing posted yet for this filter.</div>'}`;
 }
 
 function renderClients() {
@@ -1399,6 +1475,10 @@ function openClientForm(client) {
         <textarea name="categories" rows="5">${escapeHtml((c.categories || []).join('\n'))}</textarea>
       </div>
       <div class="field">
+        <label>Platforms this account posts on</label>
+        <div class="collab-box">${PLATFORMS.map(p => `<label class="check collab-check"><input type="checkbox" name="platforms" value="${p.id}" ${(c.platforms || ['ig']).includes(p.id) ? 'checked' : ''}> ${p.label}</label>`).join('')}</div>
+      </div>
+      <div class="field">
         <label>Saved hashtags</label>
         <input name="hashtags" value="${escapeHtml(c.hashtags || '')}" placeholder="#nutrition #healthyfood #vizag">
       </div>
@@ -1450,6 +1530,7 @@ function openClientForm(client) {
       }));
       Store.saveClient(Object.assign({}, c, {
         kind: f.kind.value,
+        platforms: [...form.querySelectorAll('input[name="platforms"]:checked')].map(x => x.value),
         hashtags: f.hashtags.value.trim(),
         template,
         id: c.id || uid(),
@@ -1630,15 +1711,15 @@ function renderClientDetail() {
     <div class="two-col" style="margin-bottom:24px">
       <div>
         <h2>Last 8 weeks</h2>
-        <table>
+        <div class="table-wrap"><table>
           <thead><tr><th>Week starting</th><th>Reels</th><th>Posts</th></tr></thead>
           <tbody>${weeks.map(w => `<tr><td>${shortDate(w.start)}</td>${w.before ? '<td class="hint">-</td><td class="hint">-</td>' : cell(w.reels, c.reelsPerWeek) + cell(w.posts, c.postsPerWeek)}</tr>`).join('')}</tbody>
-        </table>
+        </table></div>
         <p class="hint" style="margin-top:6px">Green = target met, amber = partly, red = nothing posted.</p>
       </div>
       <div>
         <h2>Month by month</h2>
-        ${monthRows ? `<table><thead><tr><th>Month</th><th>Reels</th><th>Posts</th><th>Total</th></tr></thead><tbody>${monthRows}</tbody></table>` : '<div class="empty">Nothing posted yet.</div>'}
+        ${monthRows ? `<div class="table-wrap"><table><thead><tr><th>Month</th><th>Reels</th><th>Posts</th><th>Total</th></tr></thead><tbody>${monthRows}</tbody></table></div>` : '<div class="empty">Nothing posted yet.</div>'}
         <h2 style="margin-top:24px">Content mix</h2>
         ${catRows ? `<div class="card">${catRows}</div>` : '<div class="empty">No categories yet.</div>'}
       </div>
@@ -1651,8 +1732,28 @@ function renderClientDetail() {
       </div>
       <div>
         <h2>Posted <span class="badge">${posted.length}</span></h2>
-        <div class="list">${posted.length ? posted.map(i => itemRow(i, i.link ? `<a href="${escapeHtml(i.link)}" target="_blank" rel="noopener" data-stop>Open on Instagram</a>` : '')).join('') : '<div class="empty">Nothing posted yet.</div>'}</div>
+        ${crossPostSummary(c, posted)}
+        <div class="list">${posted.length ? posted.filter(i => !state.pfMissing || !isPostedOn(i, c.id, state.pfMissing)).map(i => itemRow(i, i.link ? `<a href="${escapeHtml(i.link)}" target="_blank" rel="noopener" data-stop>Open on Instagram</a>` : '')).join('') : '<div class="empty">Nothing posted yet.</div>'}</div>
       </div>
+    </div>`;
+}
+
+function crossPostSummary(c, posted) {
+  const list = PLATFORMS.filter(p => (c.platforms || []).includes(p.id));
+  if (!list.length || !posted.length) return '';
+  const since = addDays(todayStr(), -30);
+  const recent = posted.filter(i => i.postedDate >= since);
+  const stats = list.map(p => {
+    const n = recent.filter(i => isPostedOn(i, c.id, p.id)).length;
+    const full = recent.length && n === recent.length;
+    return `<span class="pf-stat ${full ? 'full' : ''}">${p.label} <strong>${n}/${recent.length}</strong></span>`;
+  }).join('');
+  const chips = [{ id: '', label: 'All' }, ...list.filter(p => p.id !== 'ig').map(p => ({ id: p.id, label: 'Not on ' + p.label + ' yet' }))]
+    .map(p => `<button class="chip-btn ${state.pfMissing === p.id ? 'active' : ''}" data-action="pf-filter" data-pf="${p.id}">${p.label}</button>`).join('');
+  return `<div class="card" style="margin-bottom:12px;padding:12px">
+      <div class="hint" style="margin-bottom:6px">Last 30 days, posted on each platform</div>
+      <div class="pf-stats">${stats}</div>
+      ${list.length > 1 ? `<div class="chip-row" style="margin-top:10px">${chips}</div>` : ''}
     </div>`;
 }
 
@@ -1680,7 +1781,7 @@ function render() {
 function switchView(view) {
   view = view || 'dashboard';
   if (view.startsWith('client/')) {
-    if (state.clientId !== view.slice(7)) state.planWeek = 0;
+    if (state.clientId !== view.slice(7)) { state.planWeek = 0; state.pfMissing = ''; }
     state.clientId = view.slice(7);
     view = 'client';
   }
@@ -1914,6 +2015,21 @@ document.addEventListener('click', e => {
       break;
     case 'hist-clear-month':
       state.histMonth = '';
+      render();
+      break;
+    case 'toggle-platform': {
+      const item = Store.item(id);
+      if (!item) break;
+      const a = el.dataset.acct, pf = el.dataset.pf;
+      item.crossPost = item.crossPost || {};
+      item.crossPost[a] = Object.assign({}, item.crossPost[a]);
+      item.crossPost[a][pf] = !item.crossPost[a][pf];
+      Store.saveItem(item);
+      render();
+      break;
+    }
+    case 'pf-filter':
+      state.pfMissing = el.dataset.pf || '';
       render();
       break;
     case 'week-nav': {
